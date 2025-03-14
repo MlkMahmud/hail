@@ -28,25 +28,62 @@ func main() {
 
 	command := os.Args[1]
 
-	if command == "decode" {
-		bencodedValue := os.Args[2]
-		decoded, err := decodeBencode(bencodedValue)
+	switch command {
+	case "decode":
+		{
+			bencodedValue := os.Args[2]
+			decoded, err := decodeBencode(bencodedValue)
 
-		if err != nil {
-			log.Fatal(err)
+			if err != nil {
+				log.Fatal(err)
+				return
+			}
+
+			jsonString, err := json.Marshal(decoded)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			fmt.Println(string(jsonString))
 			return
 		}
 
-		jsonString, err := json.Marshal(decoded)
+	case "info":
+		{
+			torrentFilePath := os.Args[2]
 
-		if err != nil {
-			log.Fatal(err)
+			fileContent, err := os.ReadFile(torrentFilePath)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			decodedValue, _, err := bencode.DecodeBencodedValue(string(fileContent))
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if dict, ok := decodedValue.(map[string]any); ok {
+				if trackerUrl, exists := dict["announce"]; exists {
+					fmt.Printf("Tracker URL: %s\n", trackerUrl)
+				}
+
+				if infoDict, ok := dict["info"].(map[string]any); ok {
+					if length, exists := infoDict["length"]; exists {
+						fmt.Printf("Length: %d\n", length)
+					}
+				}
+			}
+
+			return
 		}
 
-		fmt.Println(string(jsonString))
-		return
-	} else {
-		fmt.Println("Unknown command: " + command)
-		os.Exit(1)
+	default:
+		{
+			fmt.Println("Unknown command: " + command)
+			os.Exit(1)
+		}
 	}
 }
