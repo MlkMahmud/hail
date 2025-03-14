@@ -3,85 +3,48 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
-	"strconv"
-	"strings"
 	"unicode"
-	// bencode "github.com/jackpal/bencode-go" // Available if you need it!
+
+	bencode "github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 )
 
 // Ensures gofmt doesn't remove the "os" encoding/json import (feel free to remove this!)
 var _ = json.Marshal
 
-func decodeBencodedInteger(bencodedString string) (int, error) {
-	const StartDelim, EndDelim = 'i', 'e'
-	bencodedStringLen := len(bencodedString)
-
-	if bencodedStringLen < 3 {
-		return 0, fmt.Errorf("bencoded integer string too short")
-	}
-
-	if bencodedString[0] != StartDelim {
-		return 0, fmt.Errorf("missing start delimeter '%c'", StartDelim)
-	}
-
-	startIndex := 1
-	endIndex := startIndex
-
-	if strings.HasPrefix(bencodedString[startIndex:], "-0") || strings.HasPrefix(bencodedString[startIndex:], "0") && (startIndex+1 < bencodedStringLen && bencodedString[startIndex+1] != EndDelim) {
-		return 0, fmt.Errorf("invalid leading zero")
-	}
-
-	if bencodedString[startIndex] == '-' {
-		endIndex++
-	}
-
-	for ; endIndex < bencodedStringLen && bencodedString[endIndex] != EndDelim; endIndex++ {
-	}
-
-	if endIndex >= bencodedStringLen || bencodedString[endIndex] != EndDelim {
-		return 0, fmt.Errorf("missing end delimiter '%c'", EndDelim)
-	}
-
-	result, err := strconv.Atoi(string(bencodedString[startIndex:endIndex]))
-
-	if err != nil {
-		return 0, err
-	}
-
-	return result, nil
-}
-
 // Example:
 // - 5:hello -> hello
 // - 10:hello12345 -> hello12345
 func decodeBencode(bencodedString string) (interface{}, error) {
+	if len(bencodedString) == 0 {
+		return nil, fmt.Errorf("bencoded string is empty")
+	}
+
 	if unicode.IsDigit(rune(bencodedString[0])) {
-		var firstColonIndex int
+		decodedString, err := bencode.DecodeBencodedString(bencodedString)
 
-		for i := 0; i < len(bencodedString); i++ {
-			if bencodedString[i] == ':' {
-				firstColonIndex = i
-				break
-			}
-		}
-
-		lengthStr := bencodedString[:firstColonIndex]
-
-		length, err := strconv.Atoi(lengthStr)
 		if err != nil {
 			return "", err
 		}
 
-		return bencodedString[firstColonIndex+1 : firstColonIndex+1+length], nil
+		return decodedString, nil
 	} else if bencodedString[0] == 'i' {
-		decodedInterger, err := decodeBencodedInteger(bencodedString)
+		decodedInterger, err := bencode.DecodeBencodedInteger(bencodedString)
 
 		if err != nil {
-			return "", err
+			return 0, err
 		}
 
 		return decodedInterger, nil
+	} else if bencodedString[0] == 'l' {
+		decodedList, err := bencode.DecodeBencodedList(bencodedString)
+
+		if err != nil {
+			return nil, err
+		}
+
+		return decodedList, nil
 	} else {
 		return "", fmt.Errorf("Only strings are supported at the moment")
 	}
@@ -100,17 +63,17 @@ func main() {
 		decoded, err := decodeBencode(bencodedValue)
 
 		if err != nil {
-			fmt.Println(err)
+			log.Fatal(err)
 			return
 		}
 
-		if bencodedValue[0] == 'i' {
-			fmt.Printf("%d\n", decoded)
+		if unicode.IsDigit(rune(bencodedValue[0])) {
+			fmt.Printf("\"%s\"\n", decoded)
 			return
 		}
 
-		jsonOutput, _ := json.Marshal(decoded)
-		fmt.Println(string(jsonOutput))
+		fmt.Printf("%v\n", decoded)
+		return
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
