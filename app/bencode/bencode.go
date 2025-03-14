@@ -8,28 +8,28 @@ import (
 )
 
 const (
-	DictStartDelim    = 'd'
-	IntegerStartDelim = 'i'
-	ListStartDelim    = 'l'
-	EndDelim          = 'e'
+	dictStartDelim    = 'd'
+	integerStartDelim = 'i'
+	listStartDelim    = 'l'
+	endDelim          = 'e'
 )
 
-func DecodeBencodedDict(becondedString string) (map[string]any, int, error) {
+func decodeBencodedDict(becondedString string) (map[string]any, int, error) {
 	bencodedStringLen := len(becondedString)
 
 	if bencodedStringLen == 0 {
 		return nil, 0, fmt.Errorf("bencoded list string is too short")
 	}
 
-	if becondedString[0] != DictStartDelim {
-		return nil, 0, fmt.Errorf("missing start delimeter '%c'", DictStartDelim)
+	if becondedString[0] != dictStartDelim {
+		return nil, 0, fmt.Errorf("missing start delimeter '%c'", dictStartDelim)
 	}
 
 	strIndex := 1
 	decodedDict := map[string]any{}
 
-	for strIndex < bencodedStringLen && becondedString[strIndex] != EndDelim {
-		key, valueStartDelimIndex, err := DecodeBencodedString(becondedString[strIndex:])
+	for strIndex < bencodedStringLen && becondedString[strIndex] != endDelim {
+		key, valueStartDelimIndex, err := decodeBencodedString(becondedString[strIndex:])
 
 		if err != nil {
 			return nil, 0, err
@@ -49,21 +49,21 @@ func DecodeBencodedDict(becondedString string) (map[string]any, int, error) {
 	return decodedDict, strIndex + 1, nil
 }
 
-func DecodeBencodedList(becondedString string) ([]any, int, error) {
+func decodeBencodedList(becondedString string) ([]any, int, error) {
 	bencodedStringLen := len(becondedString)
 
 	if bencodedStringLen == 0 {
 		return nil, 0, fmt.Errorf("bencoded list string is too short")
 	}
 
-	if becondedString[0] != ListStartDelim {
-		return nil, 0, fmt.Errorf("missing start delimeter '%c'", ListStartDelim)
+	if becondedString[0] != listStartDelim {
+		return nil, 0, fmt.Errorf("missing start delimeter '%c'", listStartDelim)
 	}
 
 	decodedList := []any{}
 	stringIndex := 1
 
-	for stringIndex < bencodedStringLen && becondedString[stringIndex] != EndDelim {
+	for stringIndex < bencodedStringLen && becondedString[stringIndex] != endDelim {
 		decodedValue, nextDelimIndex, err := DecodeBencodedValue(becondedString[stringIndex:])
 
 		if err != nil {
@@ -74,36 +74,36 @@ func DecodeBencodedList(becondedString string) ([]any, int, error) {
 		stringIndex += nextDelimIndex
 	}
 
-	if becondedString[stringIndex] != EndDelim {
-		return nil, 0, fmt.Errorf("missing end delimiter '%c'", EndDelim)
+	if becondedString[stringIndex] != endDelim {
+		return nil, 0, fmt.Errorf("missing end delimiter '%c'", endDelim)
 	}
 
 	return decodedList, stringIndex + 1, nil
 }
 
-func DecodeBencodedInteger(bencodedString string) (int, int, error) {
+func decodeBencodedInteger(bencodedString string) (int, int, error) {
 	bencodedStringLen := len(bencodedString)
 
 	if bencodedStringLen < 3 {
 		return 0, 0, fmt.Errorf("bencoded integer string too short")
 	}
 
-	if bencodedString[0] != IntegerStartDelim {
-		return 0, 0, fmt.Errorf("missing start delimeter '%c'", IntegerStartDelim)
+	if bencodedString[0] != integerStartDelim {
+		return 0, 0, fmt.Errorf("missing start delimeter '%c'", integerStartDelim)
 	}
 
 	startIndex := 1
 	endIndex := startIndex
 
-	if strings.HasPrefix(bencodedString[startIndex:], "-0") || strings.HasPrefix(bencodedString[startIndex:], "0") && (startIndex+1 < bencodedStringLen && bencodedString[startIndex+1] != EndDelim) {
+	if strings.HasPrefix(bencodedString[startIndex:], "-0") || strings.HasPrefix(bencodedString[startIndex:], "0") && (startIndex+1 < bencodedStringLen && bencodedString[startIndex+1] != endDelim) {
 		return 0, 0, fmt.Errorf("invalid leading zero")
 	}
 
-	for ; endIndex < bencodedStringLen && bencodedString[endIndex] != EndDelim; endIndex++ {
+	for ; endIndex < bencodedStringLen && bencodedString[endIndex] != endDelim; endIndex++ {
 	}
 
-	if endIndex >= bencodedStringLen || bencodedString[endIndex] != EndDelim {
-		return 0, 0, fmt.Errorf("missing end delimiter '%c'", EndDelim)
+	if endIndex >= bencodedStringLen || bencodedString[endIndex] != endDelim {
+		return 0, 0, fmt.Errorf("missing end delimiter '%c'", endDelim)
 	}
 
 	result, err := strconv.Atoi(string(bencodedString[startIndex:endIndex]))
@@ -115,7 +115,7 @@ func DecodeBencodedInteger(bencodedString string) (int, int, error) {
 	return result, endIndex + 1, nil
 }
 
-func DecodeBencodedString(bencodedString string) (string, int, error) {
+func decodeBencodedString(bencodedString string) (string, int, error) {
 	var firstColonIndex int
 	bencodedStringLen := len(bencodedString)
 
@@ -159,7 +159,7 @@ func DecodeBencodedValue(bencodedString string) (any, int, error) {
 	switch {
 	case unicode.IsDigit(rune(char)):
 		{
-			decodedString, nextDelimIndex, err := DecodeBencodedString(bencodedString)
+			decodedString, nextDelimIndex, err := decodeBencodedString(bencodedString)
 
 			if err != nil {
 				return "", 0, err
@@ -168,9 +168,9 @@ func DecodeBencodedValue(bencodedString string) (any, int, error) {
 			return decodedString, nextDelimIndex, nil
 		}
 
-	case char == DictStartDelim:
+	case char == dictStartDelim:
 		{
-			decodedDict, nextDelimIndex, err := DecodeBencodedDict(bencodedString)
+			decodedDict, nextDelimIndex, err := decodeBencodedDict(bencodedString)
 
 			if err != nil {
 				return nil, 0, err
@@ -179,9 +179,9 @@ func DecodeBencodedValue(bencodedString string) (any, int, error) {
 			return decodedDict, nextDelimIndex, nil
 		}
 
-	case char == IntegerStartDelim:
+	case char == integerStartDelim:
 		{
-			decodedInterger, nextDelimIndex, err := DecodeBencodedInteger(bencodedString)
+			decodedInterger, nextDelimIndex, err := decodeBencodedInteger(bencodedString)
 
 			if err != nil {
 				return 0, 0, err
@@ -190,9 +190,9 @@ func DecodeBencodedValue(bencodedString string) (any, int, error) {
 			return decodedInterger, nextDelimIndex, nil
 		}
 
-	case char == ListStartDelim:
+	case char == listStartDelim:
 		{
-			decodedList, nextDelimIndex, err := DecodeBencodedList(bencodedString)
+			decodedList, nextDelimIndex, err := decodeBencodedList(bencodedString)
 
 			if err != nil {
 				return nil, 0, err
