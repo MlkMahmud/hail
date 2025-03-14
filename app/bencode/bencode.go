@@ -8,10 +8,38 @@ import (
 )
 
 const (
+	DictStartDelim    = 'd'
 	IntegerStartDelim = 'i'
 	ListStartDelim    = 'l'
 	EndDelim          = 'e'
 )
+
+func DecodeBencodedDict(becondedString string) (map[string]any, int, error) {
+	bencodedStringLen := len(becondedString)
+
+	if bencodedStringLen == 0 {
+		return nil, 0, fmt.Errorf("bencoded list string is too short")
+	}
+
+	if becondedString[0] != DictStartDelim {
+		return nil, 0, fmt.Errorf("missing start delimeter '%c'", DictStartDelim)
+	}
+
+	strIndex := 1
+
+	for strIndex < bencodedStringLen && becondedString[strIndex] != EndDelim {
+		key, valueStartDelimIndex, err := DecodeBencodedString(becondedString[strIndex:])
+
+		if err != nil {
+			return nil, 0, err
+		}
+
+		strIndex += valueStartDelimIndex
+		value, nextDelimIndex, err := deco
+	}
+
+	return nil, 0, fmt.Errorf("")
+}
 
 func DecodeBencodedList(becondedString string) ([]any, int, error) {
 	bencodedStringLen := len(becondedString)
@@ -150,4 +178,38 @@ func DecodeBencodedString(bencodedString string) (string, int, error) {
 
 	endIndex := firstColonIndex + 1 + length
 	return bencodedString[firstColonIndex+1 : endIndex], endIndex, nil
+}
+
+func DecodeBencodedValue(bencodedString string) (any, int, error) {
+	if len(bencodedString) == 0 {
+		return nil, 0, fmt.Errorf("bencoded string is empty")
+	}
+
+	if unicode.IsDigit(rune(bencodedString[0])) {
+		decodedString, nextDelimIndex, err := DecodeBencodedString(bencodedString)
+
+		if err != nil {
+			return "", 0, err
+		}
+
+		return decodedString, nextDelimIndex, nil
+	} else if bencodedString[0] == 'i' {
+		decodedInterger, nextDelimIndex, err := DecodeBencodedInteger(bencodedString)
+
+		if err != nil {
+			return 0, 0, err
+		}
+
+		return decodedInterger, nextDelimIndex, nil
+	} else if bencodedString[0] == 'l' {
+		decodedList, nextDelimIndex, err := DecodeBencodedList(bencodedString)
+
+		if err != nil {
+			return nil, 0, err
+		}
+
+		return decodedList, nextDelimIndex, nil
+	} else {
+		return "", 0, fmt.Errorf("Only strings are supported at the moment")
+	}
 }
