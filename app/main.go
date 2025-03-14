@@ -16,7 +16,7 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 	}
 
 	if unicode.IsDigit(rune(bencodedString[0])) {
-		decodedString, err := bencode.DecodeBencodedString(bencodedString)
+		decodedString, _, err := bencode.DecodeBencodedString(bencodedString)
 
 		if err != nil {
 			return "", err
@@ -24,7 +24,7 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 
 		return decodedString, nil
 	} else if bencodedString[0] == 'i' {
-		decodedInterger, err := bencode.DecodeBencodedInteger(bencodedString)
+		decodedInterger, _, err := bencode.DecodeBencodedInteger(bencodedString)
 
 		if err != nil {
 			return 0, err
