@@ -10,12 +10,6 @@ import (
 	bencode "github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 )
 
-// Ensures gofmt doesn't remove the "os" encoding/json import (feel free to remove this!)
-var _ = json.Marshal
-
-// Example:
-// - 5:hello -> hello
-// - 10:hello12345 -> hello12345
 func decodeBencode(bencodedString string) (interface{}, error) {
 	if len(bencodedString) == 0 {
 		return nil, fmt.Errorf("bencoded string is empty")
@@ -67,12 +61,18 @@ func main() {
 			return
 		}
 
-		if unicode.IsDigit(rune(bencodedValue[0])) {
-			fmt.Printf("\"%s\"\n", decoded)
-			return
+		// if unicode.IsDigit(rune(bencodedValue[0])) {
+		// 	fmt.Printf("\"%s\"\n", decoded)
+		// 	return
+		// }
+
+		jsonString, err := json.Marshal(decoded)
+
+		if err != nil {
+			log.Fatal(err)
 		}
 
-		fmt.Printf("%v\n", decoded)
+		fmt.Println(string(jsonString))
 		return
 	} else {
 		fmt.Println("Unknown command: " + command)
