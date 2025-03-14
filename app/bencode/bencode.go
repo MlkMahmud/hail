@@ -8,20 +8,20 @@ import (
 )
 
 const (
-	StartDelim     = 'i'
-	ListStartDelim = 'l'
-	EndDelim       = 'e'
+	IntegerStartDelim = 'i'
+	ListStartDelim    = 'l'
+	EndDelim          = 'e'
 )
 
-func DecodeBencodedList(becondedString string) ([]any, error) {
+func DecodeBencodedList(becondedString string) ([]any, int, error) {
 	bencodedStringLen := len(becondedString)
 
 	if bencodedStringLen == 0 {
-		return nil, fmt.Errorf("bencoded list string is too short")
+		return nil, 0, fmt.Errorf("bencoded list string is too short")
 	}
 
 	if becondedString[0] != ListStartDelim {
-		return nil, fmt.Errorf("missing start delimeter '%c'", ListStartDelim)
+		return nil, 0, fmt.Errorf("missing start delimeter '%c'", ListStartDelim)
 	}
 
 	decodedList := []any{}
@@ -31,12 +31,12 @@ func DecodeBencodedList(becondedString string) ([]any, error) {
 		char := becondedString[stringIndex]
 
 		switch {
-		case char == 'i':
+		case char == IntegerStartDelim:
 			{
 				decodedInteger, err := DecodeBencodedInteger(becondedString[stringIndex:])
 
 				if err != nil {
-					return nil, err
+					return nil, 0, err
 				}
 
 				decodedList = append(decodedList, decodedInteger)
@@ -46,12 +46,25 @@ func DecodeBencodedList(becondedString string) ([]any, error) {
 				break
 			}
 
+		case char == ListStartDelim:
+			{
+				decodedNestedList, nextDelimIndex, err := DecodeBencodedList(becondedString[stringIndex:])
+
+				if err != nil {
+					return nil, 0, err
+				}
+
+				decodedList = append(decodedList, decodedNestedList)
+				stringIndex += nextDelimIndex
+				break
+			}
+
 		case unicode.IsDigit(rune(char)):
 			{
 				decodedString, err := DecodeBencodedString(becondedString[stringIndex:])
 
 				if err != nil {
-					return nil, err
+					return nil, 0, err
 				}
 				decodedStringLen := len(decodedString)
 				decodedList = append(decodedList, decodedString)
@@ -66,16 +79,16 @@ func DecodeBencodedList(becondedString string) ([]any, error) {
 
 		default:
 			{
-				return nil, fmt.Errorf("unsupported delimeter '%c'", char)
+				return nil, 0, fmt.Errorf("unsupported delimeter '%c'", char)
 			}
 		}
 	}
 
 	if becondedString[stringIndex] != EndDelim {
-		return nil, fmt.Errorf("missing end delimiter '%c'", EndDelim)
+		return nil, 0, fmt.Errorf("missing end delimiter '%c'", EndDelim)
 	}
 
-	return decodedList, nil
+	return decodedList, stringIndex + 1, nil
 }
 
 func DecodeBencodedInteger(bencodedString string) (int, error) {
@@ -85,8 +98,8 @@ func DecodeBencodedInteger(bencodedString string) (int, error) {
 		return 0, fmt.Errorf("bencoded integer string too short")
 	}
 
-	if bencodedString[0] != StartDelim {
-		return 0, fmt.Errorf("missing start delimeter '%c'", StartDelim)
+	if bencodedString[0] != IntegerStartDelim {
+		return 0, fmt.Errorf("missing start delimeter '%c'", IntegerStartDelim)
 	}
 
 	startIndex := 1

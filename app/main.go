@@ -32,7 +32,7 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 
 		return decodedInterger, nil
 	} else if bencodedString[0] == 'l' {
-		decodedList, err := bencode.DecodeBencodedList(bencodedString)
+		decodedList, _, err := bencode.DecodeBencodedList(bencodedString)
 
 		if err != nil {
 			return nil, err
@@ -45,14 +45,11 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 }
 
 func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Fprintln(os.Stderr, "Logs from your program will appear here!")
 
 	command := os.Args[1]
 
 	if command == "decode" {
-		// Uncomment this block to pass the first stage
-		//
 		bencodedValue := os.Args[2]
 		decoded, err := decodeBencode(bencodedValue)
 
@@ -60,11 +57,6 @@ func main() {
 			log.Fatal(err)
 			return
 		}
-
-		// if unicode.IsDigit(rune(bencodedValue[0])) {
-		// 	fmt.Printf("\"%s\"\n", decoded)
-		// 	return
-		// }
 
 		jsonString, err := json.Marshal(decoded)
 
