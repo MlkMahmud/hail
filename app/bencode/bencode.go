@@ -26,6 +26,7 @@ func DecodeBencodedDict(becondedString string) (map[string]any, int, error) {
 	}
 
 	strIndex := 1
+	decodedDict := map[string]any{}
 
 	for strIndex < bencodedStringLen && becondedString[strIndex] != EndDelim {
 		key, valueStartDelimIndex, err := DecodeBencodedString(becondedString[strIndex:])
@@ -35,10 +36,17 @@ func DecodeBencodedDict(becondedString string) (map[string]any, int, error) {
 		}
 
 		strIndex += valueStartDelimIndex
-		value, nextDelimIndex, err := deco
+		value, nextDelimIndex, err := DecodeBencodedValue(becondedString[strIndex:])
+
+		if err != nil {
+			return nil, 0, err
+		}
+
+		strIndex += nextDelimIndex
+		decodedDict[key] = value
 	}
 
-	return nil, 0, fmt.Errorf("")
+	return decodedDict, strIndex + 1, nil
 }
 
 func DecodeBencodedList(becondedString string) ([]any, int, error) {
@@ -56,53 +64,14 @@ func DecodeBencodedList(becondedString string) ([]any, int, error) {
 	stringIndex := 1
 
 	for stringIndex < bencodedStringLen && becondedString[stringIndex] != EndDelim {
-		char := becondedString[stringIndex]
+		decodedValue, nextDelimIndex, err := DecodeBencodedValue(becondedString[stringIndex:])
 
-		switch {
-		case char == IntegerStartDelim:
-			{
-				decodedInteger, nextDelimIndex, err := DecodeBencodedInteger(becondedString[stringIndex:])
-
-				if err != nil {
-					return nil, 0, err
-				}
-
-				decodedList = append(decodedList, decodedInteger)
-				stringIndex += nextDelimIndex
-				break
-			}
-
-		case char == ListStartDelim:
-			{
-				decodedNestedList, nextDelimIndex, err := DecodeBencodedList(becondedString[stringIndex:])
-
-				if err != nil {
-					return nil, 0, err
-				}
-
-				decodedList = append(decodedList, decodedNestedList)
-				stringIndex += nextDelimIndex
-				break
-			}
-
-		case unicode.IsDigit(rune(char)):
-			{
-				decodedString, nextDelimIndex, err := DecodeBencodedString(becondedString[stringIndex:])
-
-				if err != nil {
-					return nil, 0, err
-				}
-
-				decodedList = append(decodedList, decodedString)
-				stringIndex += nextDelimIndex
-				break
-			}
-
-		default:
-			{
-				return nil, 0, fmt.Errorf("unsupported delimeter '%c'", char)
-			}
+		if err != nil {
+			return nil, 0, err
 		}
+
+		decodedList = append(decodedList, decodedValue)
+		stringIndex += nextDelimIndex
 	}
 
 	if becondedString[stringIndex] != EndDelim {
@@ -155,7 +124,7 @@ func DecodeBencodedString(bencodedString string) (string, int, error) {
 	}
 
 	if !unicode.IsDigit(rune(bencodedString[0])) {
-		return "", 0, fmt.Errorf("invalid string length %c''", bencodedString[0])
+		return "", 0, fmt.Errorf("invalid string length '%c'", bencodedString[0])
 	}
 
 	for i := range bencodedString {
@@ -185,31 +154,56 @@ func DecodeBencodedValue(bencodedString string) (any, int, error) {
 		return nil, 0, fmt.Errorf("bencoded string is empty")
 	}
 
-	if unicode.IsDigit(rune(bencodedString[0])) {
-		decodedString, nextDelimIndex, err := DecodeBencodedString(bencodedString)
+	char := bencodedString[0]
 
-		if err != nil {
-			return "", 0, err
+	switch {
+	case unicode.IsDigit(rune(char)):
+		{
+			decodedString, nextDelimIndex, err := DecodeBencodedString(bencodedString)
+
+			if err != nil {
+				return "", 0, err
+			}
+
+			return decodedString, nextDelimIndex, nil
 		}
 
-		return decodedString, nextDelimIndex, nil
-	} else if bencodedString[0] == 'i' {
-		decodedInterger, nextDelimIndex, err := DecodeBencodedInteger(bencodedString)
+	case char == DictStartDelim:
+		{
+			decodedDict, nextDelimIndex, err := DecodeBencodedDict(bencodedString)
 
-		if err != nil {
-			return 0, 0, err
+			if err != nil {
+				return nil, 0, err
+			}
+
+			return decodedDict, nextDelimIndex, nil
 		}
 
-		return decodedInterger, nextDelimIndex, nil
-	} else if bencodedString[0] == 'l' {
-		decodedList, nextDelimIndex, err := DecodeBencodedList(bencodedString)
+	case char == IntegerStartDelim:
+		{
+			decodedInterger, nextDelimIndex, err := DecodeBencodedInteger(bencodedString)
 
-		if err != nil {
-			return nil, 0, err
+			if err != nil {
+				return 0, 0, err
+			}
+
+			return decodedInterger, nextDelimIndex, nil
 		}
 
-		return decodedList, nextDelimIndex, nil
-	} else {
-		return "", 0, fmt.Errorf("Only strings are supported at the moment")
+	case char == ListStartDelim:
+		{
+			decodedList, nextDelimIndex, err := DecodeBencodedList(bencodedString)
+
+			if err != nil {
+				return nil, 0, err
+			}
+
+			return decodedList, nextDelimIndex, nil
+		}
+
+	default:
+		{
+			return nil, 0, fmt.Errorf("unsupported delimeter '%c'", char)
+		}
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"unicode"
 
 	bencode "github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 )
@@ -15,33 +14,13 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 		return nil, fmt.Errorf("bencoded string is empty")
 	}
 
-	if unicode.IsDigit(rune(bencodedString[0])) {
-		decodedString, _, err := bencode.DecodeBencodedString(bencodedString)
+	decodedValue, _, err := bencode.DecodeBencodedValue(bencodedString)
 
-		if err != nil {
-			return "", err
-		}
-
-		return decodedString, nil
-	} else if bencodedString[0] == 'i' {
-		decodedInterger, _, err := bencode.DecodeBencodedInteger(bencodedString)
-
-		if err != nil {
-			return 0, err
-		}
-
-		return decodedInterger, nil
-	} else if bencodedString[0] == 'l' {
-		decodedList, _, err := bencode.DecodeBencodedList(bencodedString)
-
-		if err != nil {
-			return nil, err
-		}
-
-		return decodedList, nil
-	} else {
-		return "", fmt.Errorf("Only strings are supported at the moment")
+	if err != nil {
+		return nil, err
 	}
+
+	return decodedValue, nil
 }
 
 func main() {
