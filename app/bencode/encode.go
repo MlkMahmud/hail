@@ -2,14 +2,23 @@ package bencode
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
 
 func encodeDict(dict map[string]any) (string, error) {
 	entries := []string{}
+	keys := []string{}
 
-	for key, value := range dict {
+	for key := range dict {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		value := dict[key]
 		bencodedKey := encodeString(key)
 		bencodedValue, err := EncodeValue(value)
 
