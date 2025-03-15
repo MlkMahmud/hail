@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,7 +15,7 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 		return nil, fmt.Errorf("bencoded string is empty")
 	}
 
-	decodedValue, _, err := bencode.DecodeBencodedValue(bencodedString)
+	decodedValue, _, err := bencode.DecodeValue(bencodedString)
 
 	if err != nil {
 		return nil, err
@@ -59,7 +60,7 @@ func main() {
 				log.Fatal(err)
 			}
 
-			decodedValue, _, err := bencode.DecodeBencodedValue(string(fileContent))
+			decodedValue, _, err := bencode.DecodeValue(string(fileContent))
 
 			if err != nil {
 				log.Fatal(err)
@@ -74,6 +75,14 @@ func main() {
 					if length, exists := infoDict["length"]; exists {
 						fmt.Printf("Length: %d\n", length)
 					}
+
+					bencodedInfoDict, err := bencode.EncodeValue(infoDict)
+
+					if err != nil {
+						log.Fatal(err)
+					}
+
+					fmt.Printf("Info Hash: %x\n", sha1.Sum([]byte(bencodedInfoDict)))
 				}
 			}
 

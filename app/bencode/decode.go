@@ -14,7 +14,7 @@ const (
 	endDelim          = 'e'
 )
 
-func decodeBencodedDict(becondedString string) (map[string]any, int, error) {
+func decodeDict(becondedString string) (map[string]any, int, error) {
 	bencodedStringLen := len(becondedString)
 
 	if bencodedStringLen == 0 {
@@ -29,14 +29,14 @@ func decodeBencodedDict(becondedString string) (map[string]any, int, error) {
 	decodedDict := map[string]any{}
 
 	for strIndex < bencodedStringLen && becondedString[strIndex] != endDelim {
-		key, valueStartDelimIndex, err := decodeBencodedString(becondedString[strIndex:])
+		key, valueStartDelimIndex, err := decodeString(becondedString[strIndex:])
 
 		if err != nil {
 			return nil, 0, err
 		}
 
 		strIndex += valueStartDelimIndex
-		value, nextDelimIndex, err := DecodeBencodedValue(becondedString[strIndex:])
+		value, nextDelimIndex, err := DecodeValue(becondedString[strIndex:])
 
 		if err != nil {
 			return nil, 0, err
@@ -49,7 +49,7 @@ func decodeBencodedDict(becondedString string) (map[string]any, int, error) {
 	return decodedDict, strIndex + 1, nil
 }
 
-func decodeBencodedList(becondedString string) ([]any, int, error) {
+func decodeList(becondedString string) ([]any, int, error) {
 	bencodedStringLen := len(becondedString)
 
 	if bencodedStringLen == 0 {
@@ -64,7 +64,7 @@ func decodeBencodedList(becondedString string) ([]any, int, error) {
 	stringIndex := 1
 
 	for stringIndex < bencodedStringLen && becondedString[stringIndex] != endDelim {
-		decodedValue, nextDelimIndex, err := DecodeBencodedValue(becondedString[stringIndex:])
+		decodedValue, nextDelimIndex, err := DecodeValue(becondedString[stringIndex:])
 
 		if err != nil {
 			return nil, 0, err
@@ -81,7 +81,7 @@ func decodeBencodedList(becondedString string) ([]any, int, error) {
 	return decodedList, stringIndex + 1, nil
 }
 
-func decodeBencodedInteger(bencodedString string) (int, int, error) {
+func decodeInteger(bencodedString string) (int, int, error) {
 	bencodedStringLen := len(bencodedString)
 
 	if bencodedStringLen < 3 {
@@ -115,7 +115,7 @@ func decodeBencodedInteger(bencodedString string) (int, int, error) {
 	return result, endIndex + 1, nil
 }
 
-func decodeBencodedString(bencodedString string) (string, int, error) {
+func decodeString(bencodedString string) (string, int, error) {
 	var firstColonIndex int
 	bencodedStringLen := len(bencodedString)
 
@@ -149,7 +149,7 @@ func decodeBencodedString(bencodedString string) (string, int, error) {
 	return bencodedString[firstColonIndex+1 : endIndex], endIndex, nil
 }
 
-func DecodeBencodedValue(bencodedString string) (any, int, error) {
+func DecodeValue(bencodedString string) (any, int, error) {
 	if len(bencodedString) == 0 {
 		return nil, 0, fmt.Errorf("bencoded string is empty")
 	}
@@ -159,7 +159,7 @@ func DecodeBencodedValue(bencodedString string) (any, int, error) {
 	switch {
 	case unicode.IsDigit(rune(char)):
 		{
-			decodedString, nextDelimIndex, err := decodeBencodedString(bencodedString)
+			decodedString, nextDelimIndex, err := decodeString(bencodedString)
 
 			if err != nil {
 				return "", 0, err
@@ -170,7 +170,7 @@ func DecodeBencodedValue(bencodedString string) (any, int, error) {
 
 	case char == dictStartDelim:
 		{
-			decodedDict, nextDelimIndex, err := decodeBencodedDict(bencodedString)
+			decodedDict, nextDelimIndex, err := decodeDict(bencodedString)
 
 			if err != nil {
 				return nil, 0, err
@@ -181,7 +181,7 @@ func DecodeBencodedValue(bencodedString string) (any, int, error) {
 
 	case char == integerStartDelim:
 		{
-			decodedInterger, nextDelimIndex, err := decodeBencodedInteger(bencodedString)
+			decodedInterger, nextDelimIndex, err := decodeInteger(bencodedString)
 
 			if err != nil {
 				return 0, 0, err
@@ -192,7 +192,7 @@ func DecodeBencodedValue(bencodedString string) (any, int, error) {
 
 	case char == listStartDelim:
 		{
-			decodedList, nextDelimIndex, err := decodeBencodedList(bencodedString)
+			decodedList, nextDelimIndex, err := decodeList(bencodedString)
 
 			if err != nil {
 				return nil, 0, err
