@@ -75,6 +75,7 @@ func main() {
 			fmt.Printf("Tracker URL: %s\n", torrentStruct.TrackerUrl)
 			fmt.Printf("Length: %d\n", torrentStruct.Info.Length)
 			fmt.Printf("Info Hash: %x\n", torrentStruct.InfoHash)
+			fmt.Printf("Piece Length: %d\n", torrentStruct.Info.PieceLength)
 			fmt.Println("Piece Hashes:")
 			for _, value := range torrentStruct.Info.PieceHashes {
 				fmt.Printf("%x\n", value)
