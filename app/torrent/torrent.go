@@ -11,7 +11,7 @@ type TorrentInfo struct {
 	Length      int    `mapstructure:"length"`
 	Name        string `mapstructure:"name"`
 	Pieces      string `mapstructure:"pieces"`
-	PieceHashes [][sha1.Size]byte
+	PieceHashes [][]byte
 	PieceLength int `mapstructure:"piece length"`
 }
 
@@ -44,7 +44,7 @@ func NewTorrent(value any) (*Torrent, error) {
 	torrent.InfoHash = sha1.Sum([]byte(encodedValue))
 
 	for i := 0; i < len(torrent.Info.Pieces); i += sha1.Size {
-		torrent.Info.PieceHashes = append(torrent.Info.PieceHashes, sha1.Sum([]byte(torrent.Info.Pieces[i:sha1.Size+i])))
+		torrent.Info.PieceHashes = append(torrent.Info.PieceHashes, []byte(torrent.Info.Pieces[i:sha1.Size+i]))
 	}
 
 	return &torrent, nil
