@@ -1,13 +1,13 @@
 package main
 
 import (
-	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 
-	bencode "github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
+	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
+	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
 )
 
 func decodeBencode(bencodedString string) (interface{}, error) {
@@ -66,26 +66,19 @@ func main() {
 				log.Fatal(err)
 			}
 
-			if dict, ok := decodedValue.(map[string]any); ok {
-				if trackerUrl, exists := dict["announce"]; exists {
-					fmt.Printf("Tracker URL: %s\n", trackerUrl)
-				}
+			torrentStruct, torrentErr := torrent.NewTorrent(decodedValue)
 
-				if infoDict, ok := dict["info"].(map[string]any); ok {
-					if length, exists := infoDict["length"]; exists {
-						fmt.Printf("Length: %d\n", length)
-					}
-
-					bencodedInfoDict, err := bencode.EncodeValue(infoDict)
-
-					if err != nil {
-						log.Fatal(err)
-					}
-
-					fmt.Printf("Info Hash: %x\n", sha1.Sum([]byte(bencodedInfoDict)))
-				}
+			if torrentErr != nil {
+				log.Fatal(torrentErr)
 			}
 
+			fmt.Printf("Tracker URL: %s\n", torrentStruct.TrackerUrl)
+			fmt.Printf("Length: %d\n", torrentStruct.Info.Length)
+			fmt.Printf("Info Hash: %x\n", torrentStruct.InfoHash)
+			fmt.Println("Piece Hashes:")
+			for _, value := range torrentStruct.Info.PieceHashes {
+				fmt.Printf("%x\n", value)
+			}
 			return
 		}
 

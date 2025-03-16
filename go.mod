@@ -9,3 +9,5 @@
 module github.com/codecrafters-io/bittorrent-starter-go
 
 go 1.24
+
+require github.com/mitchellh/mapstructure v1.5.0 // indirect
