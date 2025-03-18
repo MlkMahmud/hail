@@ -14,7 +14,7 @@ const (
 	endDelim          = 'e'
 )
 
-func decodeDict(becondedString string) (map[string]any, int, error) {
+func decodeDict(becondedString []byte) (map[string]any, int, error) {
 	bencodedStringLen := len(becondedString)
 
 	if bencodedStringLen == 0 {
@@ -49,7 +49,7 @@ func decodeDict(becondedString string) (map[string]any, int, error) {
 	return decodedDict, strIndex + 1, nil
 }
 
-func decodeList(becondedString string) ([]any, int, error) {
+func decodeList(becondedString []byte) ([]any, int, error) {
 	bencodedStringLen := len(becondedString)
 
 	if bencodedStringLen == 0 {
@@ -81,7 +81,7 @@ func decodeList(becondedString string) ([]any, int, error) {
 	return decodedList, stringIndex + 1, nil
 }
 
-func decodeInteger(bencodedString string) (int, int, error) {
+func decodeInteger(bencodedString []byte) (int, int, error) {
 	bencodedStringLen := len(bencodedString)
 
 	if bencodedStringLen < 3 {
@@ -95,7 +95,7 @@ func decodeInteger(bencodedString string) (int, int, error) {
 	startIndex := 1
 	endIndex := startIndex
 
-	if strings.HasPrefix(bencodedString[startIndex:], "-0") || strings.HasPrefix(bencodedString[startIndex:], "0") && (startIndex+1 < bencodedStringLen && bencodedString[startIndex+1] != endDelim) {
+	if strings.HasPrefix(string(bencodedString[startIndex:]), "-0") || strings.HasPrefix(string(bencodedString[startIndex:]), "0") && (startIndex+1 < bencodedStringLen && bencodedString[startIndex+1] != endDelim) {
 		return 0, 0, fmt.Errorf("invalid leading zero")
 	}
 
@@ -115,8 +115,8 @@ func decodeInteger(bencodedString string) (int, int, error) {
 	return result, endIndex + 1, nil
 }
 
-func decodeString(bencodedString string) (string, int, error) {
-	var firstColonIndex int
+func decodeString(bencodedString []byte) (string, int, error) {
+	firstColonIndex := -1
 	bencodedStringLen := len(bencodedString)
 
 	if bencodedStringLen == 0 {
@@ -134,8 +134,12 @@ func decodeString(bencodedString string) (string, int, error) {
 		}
 	}
 
+	if firstColonIndex == -1 {
+		return "", 0, fmt.Errorf("missing colon character in encoded string")
+	}
+
 	lengthStr := bencodedString[:firstColonIndex]
-	length, err := strconv.Atoi(lengthStr)
+	length, err := strconv.Atoi(string(lengthStr))
 
 	if err != nil {
 		return "", 0, err
@@ -145,11 +149,12 @@ func decodeString(bencodedString string) (string, int, error) {
 		return "", 0, fmt.Errorf("string length is invalid")
 	}
 
-	endIndex := firstColonIndex + 1 + length
-	return bencodedString[firstColonIndex+1 : endIndex], endIndex, nil
+	endIndex := firstColonIndex + length + 1
+
+	return string(bencodedString[firstColonIndex+1 : endIndex]), endIndex, nil
 }
 
-func DecodeValue(bencodedString string) (any, int, error) {
+func DecodeValue(bencodedString []byte) (any, int, error) {
 	if len(bencodedString) == 0 {
 		return nil, 0, fmt.Errorf("bencoded string is empty")
 	}

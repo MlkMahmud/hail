@@ -10,7 +10,7 @@ import (
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
 )
 
-func decodeBencode(bencodedString string) (interface{}, error) {
+func decodeBencode(bencodedString []byte) (any, error) {
 	if len(bencodedString) == 0 {
 		return nil, fmt.Errorf("bencoded string is empty")
 	}
@@ -33,7 +33,7 @@ func main() {
 	case "decode":
 		{
 			bencodedValue := os.Args[2]
-			decoded, err := decodeBencode(bencodedValue)
+			decoded, err := decodeBencode([]byte(bencodedValue))
 
 			if err != nil {
 				log.Fatal(err)
@@ -60,26 +60,62 @@ func main() {
 				log.Fatal(err)
 			}
 
-			decodedValue, _, err := bencode.DecodeValue(string(fileContent))
+			decodedValue, _, err := bencode.DecodeValue(fileContent)
 
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			torrentStruct, torrentErr := torrent.NewTorrent(decodedValue)
+			trrnt, torrentErr := torrent.NewTorrent(decodedValue)
 
 			if torrentErr != nil {
 				log.Fatal(torrentErr)
 			}
 
-			fmt.Printf("Tracker URL: %s\n", torrentStruct.TrackerUrl)
-			fmt.Printf("Length: %d\n", torrentStruct.Info.Length)
-			fmt.Printf("Info Hash: %x\n", torrentStruct.InfoHash)
-			fmt.Printf("Piece Length: %d\n", torrentStruct.Info.PieceLength)
+			fmt.Printf("Tracker URL: %s\n", trrnt.TrackerUrl)
+			fmt.Printf("Length: %d\n", trrnt.Info.Length)
+			fmt.Printf("Info Hash: %x\n", trrnt.InfoHash)
+			fmt.Printf("Piece Length: %d\n", trrnt.Info.PieceLength)
 			fmt.Println("Piece Hashes:")
-			for _, value := range torrentStruct.Info.PieceHashes {
+			for _, value := range trrnt.Info.PieceHashes {
 				fmt.Printf("%x\n", value)
 			}
+
+			return
+		}
+
+	case "peers":
+		{
+			torrentFilePath := os.Args[2]
+
+			fileContent, err := os.ReadFile(torrentFilePath)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			decodedValue, _, err := bencode.DecodeValue(fileContent)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			trrnt, torrentErr := torrent.NewTorrent(decodedValue)
+
+			if torrentErr != nil {
+				log.Fatal(torrentErr)
+			}
+
+			peers, err := trrnt.GetPeers()
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			for _, peer := range peers {
+				fmt.Printf("%s:%d\n", peer.IpAddress, peer.Port)
+			}
+
 			return
 		}
 
