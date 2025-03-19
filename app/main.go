@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
@@ -48,6 +50,53 @@ func main() {
 
 			fmt.Println(string(jsonString))
 			return
+		}
+
+	case "handshake":
+		{
+			torrentFilePath := os.Args[2]
+
+			fileContent, err := os.ReadFile(torrentFilePath)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			decodedValue, _, err := bencode.DecodeValue(fileContent)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			trrnt, torrentErr := torrent.NewTorrent(decodedValue)
+
+			if torrentErr != nil {
+				log.Fatal(torrentErr)
+			}
+
+			if _, err := trrnt.GetPeers(); err != nil {
+				log.Fatal(err)
+			}
+
+			peerAddress := os.Args[3]
+			addressParts := strings.Split(peerAddress, ":")
+			host := addressParts[0]
+
+			portNum, err := strconv.ParseUint(addressParts[1], 10, 16)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			port := uint16(portNum)
+
+			handshakeResp, err := trrnt.ConnectToPeer(torrent.Peer{IpAddress: host, Port: port})
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			fmt.Printf("Peer ID: %x\n", handshakeResp[48:])
 		}
 
 	case "info":

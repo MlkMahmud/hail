@@ -1,13 +1,16 @@
 package torrent
 
 import (
+	"bufio"
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
@@ -41,15 +44,15 @@ func NewTorrent(value any) (*Torrent, error) {
 		return nil, err
 	}
 
-	encodedValue, bencodeErr := bencode.EncodeValue(map[string]any{
+	encodedValue, err := bencode.EncodeValue(map[string]any{
 		"length":       torrent.Info.Length,
 		"name":         torrent.Info.Name,
 		"piece length": torrent.Info.PieceLength,
 		"pieces":       torrent.Info.Pieces,
 	})
 
-	if bencodeErr != nil {
-		return nil, bencodeErr
+	if err != nil {
+		return nil, err
 	}
 
 	torrent.InfoHash = sha1.Sum([]byte(encodedValue))
@@ -59,6 +62,44 @@ func NewTorrent(value any) (*Torrent, error) {
 	}
 
 	return &torrent, nil
+}
+
+func (t *Torrent) ConnectToPeer(peer Peer) ([]byte, error) {
+	conn, err := net.Dial("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))))
+
+	if err != nil {
+		return nil, err
+	}
+
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	defer conn.SetDeadline(time.Time{}) //
+	defer conn.Close()
+
+	peerId := []byte(utils.GenerateRandomString(20, ""))
+	pstr := "BitTorrent protocol"
+	messageBuf := make([]byte, len(pstr)+49)
+	messageBuf[0] = byte(len(pstr))
+
+	index := 1
+	index += copy(messageBuf[index:], []byte(pstr))
+	index += copy(messageBuf[index:], make([]byte, 8))
+	index += copy(messageBuf[index:], t.InfoHash[:])
+	index += copy(messageBuf[index:], peerId[:])
+
+	_, writeErr := conn.Write(messageBuf)
+
+	if writeErr != nil {
+		return nil, writeErr
+	}
+
+	respBuf := make([]byte, cap(messageBuf))
+	reader := bufio.NewReader(conn)
+
+	if _, err := io.ReadFull(reader, respBuf); err != nil {
+		return nil, err
+	}
+
+	return respBuf, nil
 }
 
 func (t *Torrent) getTrackerUrlWithParams() string {
