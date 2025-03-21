@@ -74,6 +74,10 @@ func decodeList(becondedString []byte) ([]any, int, error) {
 		stringIndex += nextDelimIndex
 	}
 
+	if stringIndex >= bencodedStringLen {
+		return nil, 0, fmt.Errorf("unexpected end of input")
+	}
+
 	if becondedString[stringIndex] != endDelim {
 		return nil, 0, fmt.Errorf("missing end delimiter '%c'", endDelim)
 	}
@@ -150,6 +154,10 @@ func decodeString(bencodedString []byte) (string, int, error) {
 	}
 
 	endIndex := firstColonIndex + length + 1
+
+	if endIndex > bencodedStringLen {
+		return "", 0, fmt.Errorf("unexpected end of input")
+	}
 
 	return string(bencodedString[firstColonIndex+1 : endIndex]), endIndex, nil
 }
