@@ -12,20 +12,6 @@ import (
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
 )
 
-func decodeBencode(bencodedString []byte) (any, error) {
-	if len(bencodedString) == 0 {
-		return nil, fmt.Errorf("bencoded string is empty")
-	}
-
-	decodedValue, _, err := bencode.DecodeValue(bencodedString)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return decodedValue, nil
-}
-
 func main() {
 	fmt.Fprintln(os.Stderr, "Logs from your program will appear here!")
 
@@ -35,7 +21,7 @@ func main() {
 	case "decode":
 		{
 			bencodedValue := os.Args[2]
-			decoded, err := decodeBencode([]byte(bencodedValue))
+			decoded, _ , err := bencode.DecodeValue([]byte(bencodedValue))
 
 			if err != nil {
 				log.Fatal(err)
