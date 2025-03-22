@@ -21,7 +21,7 @@ func main() {
 	case "decode":
 		{
 			bencodedValue := os.Args[2]
-			decoded, _ , err := bencode.DecodeValue([]byte(bencodedValue))
+			decoded, _, err := bencode.DecodeValue([]byte(bencodedValue))
 
 			if err != nil {
 				log.Fatal(err)
@@ -41,23 +41,10 @@ func main() {
 	case "handshake":
 		{
 			torrentFilePath := os.Args[2]
-
-			fileContent, err := os.ReadFile(torrentFilePath)
-
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			decodedValue, _, err := bencode.DecodeValue(fileContent)
+			trrnt, err := torrent.NewTorrent(torrentFilePath)
 
 			if err != nil {
 				log.Fatal(err)
-			}
-
-			trrnt, torrentErr := torrent.NewTorrent(decodedValue)
-
-			if torrentErr != nil {
-				log.Fatal(torrentErr)
 			}
 
 			if _, err := trrnt.GetPeers(); err != nil {
@@ -88,32 +75,19 @@ func main() {
 	case "info":
 		{
 			torrentFilePath := os.Args[2]
-
-			fileContent, err := os.ReadFile(torrentFilePath)
-
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			decodedValue, _, err := bencode.DecodeValue(fileContent)
+			trrnt, err := torrent.NewTorrent(torrentFilePath)
 
 			if err != nil {
 				log.Fatal(err)
-			}
-
-			trrnt, torrentErr := torrent.NewTorrent(decodedValue)
-
-			if torrentErr != nil {
-				log.Fatal(torrentErr)
 			}
 
 			fmt.Printf("Tracker URL: %s\n", trrnt.TrackerUrl)
 			fmt.Printf("Length: %d\n", trrnt.Info.Length)
 			fmt.Printf("Info Hash: %x\n", trrnt.InfoHash)
-			fmt.Printf("Piece Length: %d\n", trrnt.Info.PieceLength)
+			fmt.Printf("Piece Length: %d\n", trrnt.Info.Pieces[0].Length)
 			fmt.Println("Piece Hashes:")
-			for _, value := range trrnt.Info.PieceHashes {
-				fmt.Printf("%x\n", value)
+			for _, piece := range trrnt.Info.Pieces {
+				fmt.Printf("%x\n", piece.Hash)
 			}
 
 			return
@@ -122,23 +96,10 @@ func main() {
 	case "peers":
 		{
 			torrentFilePath := os.Args[2]
-
-			fileContent, err := os.ReadFile(torrentFilePath)
-
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			decodedValue, _, err := bencode.DecodeValue(fileContent)
+			trrnt, err := torrent.NewTorrent(torrentFilePath)
 
 			if err != nil {
 				log.Fatal(err)
-			}
-
-			trrnt, torrentErr := torrent.NewTorrent(decodedValue)
-
-			if torrentErr != nil {
-				log.Fatal(torrentErr)
 			}
 
 			peers, err := trrnt.GetPeers()
