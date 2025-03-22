@@ -8,7 +8,7 @@ import (
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 )
 
-func TestBencodeDecoder(t *testing.T) {
+func TestDecoder(t *testing.T) {
 	inputs := map[string]any{
 		"i0e":                         0,
 		"i150e":                       150,
