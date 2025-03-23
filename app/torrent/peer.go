@@ -188,6 +188,10 @@ func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, err
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return nil, err
+	}
+
 	if _, err := p.EstablishHandshake(conn, infoHash); err != nil {
 		return nil, err
 	}
