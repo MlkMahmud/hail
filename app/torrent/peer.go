@@ -155,12 +155,10 @@ func (p *Peer) waitForMessage(conn net.Conn, reader bufio.Reader, messageId Mess
 		return nil, err
 	}
 
-
-	
 	if _, err := io.ReadFull(&reader, messageLenBuf); err != nil {
 		return nil, err
 	}
-	
+
 	messageLen := binary.BigEndian.Uint32(messageLenBuf)
 	messageBuffer := make([]byte, messageLen)
 
@@ -215,19 +213,16 @@ func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, err
 	}
 
 	blocks := piece.GetPieceBlocks()
-
-	for _, block := range blocks {
-		if err := p.requestBlock(*writer, block); err != nil {
-			return nil, err
-		}
-	}
-
 	numOfBlocks := len(blocks)
 	numOfBlocksDownloaded := 0
 
 	downloadedBlocks := make([]Block, numOfBlocks)
 
 	for numOfBlocksDownloaded < numOfBlocks {
+		if err := p.requestBlock(*writer, blocks[numOfBlocksDownloaded]); err != nil {
+			return nil, err
+		}
+
 		message, err := p.waitForMessage(conn, *reader, Generic)
 
 		if err != nil {
