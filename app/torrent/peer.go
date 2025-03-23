@@ -148,15 +148,25 @@ func (p *Peer) verifyHandshakeResponse(response []byte, expectedInfoHash [sha1.S
 	return nil
 }
 
-func (p *Peer) waitForMessage(reader bufio.Reader, messageId MessageId) (*Message, error) {
+func (p *Peer) waitForMessage(conn net.Conn, reader bufio.Reader, messageId MessageId) (*Message, error) {
 	messageLenBuf := make([]byte, 4)
 
-	if _, err := io.ReadFull(&reader, messageLenBuf); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return nil, err
 	}
 
+
+	
+	if _, err := io.ReadFull(&reader, messageLenBuf); err != nil {
+		return nil, err
+	}
+	
 	messageLen := binary.BigEndian.Uint32(messageLenBuf)
 	messageBuffer := make([]byte, messageLen)
+
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return nil, err
+	}
 
 	if _, err := io.ReadFull(&reader, messageBuffer); err != nil {
 		return nil, err
@@ -188,15 +198,11 @@ func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, err
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		return nil, err
-	}
-
 	if _, err := p.EstablishHandshake(conn, infoHash); err != nil {
 		return nil, err
 	}
 
-	if _, err := p.waitForMessage(*reader, Bitfield); err != nil {
+	if _, err := p.waitForMessage(conn, *reader, Bitfield); err != nil {
 		return nil, err
 	}
 
@@ -204,7 +210,7 @@ func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, err
 		return nil, err
 	}
 
-	if _, err := p.waitForMessage(*reader, Unchoke); err != nil {
+	if _, err := p.waitForMessage(conn, *reader, Unchoke); err != nil {
 		return nil, err
 	}
 
@@ -222,7 +228,7 @@ func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, err
 	downloadedBlocks := make([]Block, numOfBlocks)
 
 	for numOfBlocksDownloaded < numOfBlocks {
-		message, err := p.waitForMessage(*reader, Generic)
+		message, err := p.waitForMessage(conn, *reader, Generic)
 
 		if err != nil {
 			return nil, err
@@ -276,6 +282,10 @@ func (p *Peer) EstablishHandshake(conn net.Conn, infoHash [sha1.Size]byte) ([]by
 
 	if writeErr != nil {
 		return nil, writeErr
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return nil, err
 	}
 
 	respBuf := make([]byte, handshakeMessageLen)
