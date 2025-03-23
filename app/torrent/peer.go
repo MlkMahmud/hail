@@ -60,7 +60,7 @@ func (p *Peer) assembleBlocks(blocks []Block, pieceLength int) []byte {
 	return buffer
 }
 
-func (p *Peer) requestBlock(writer io.Writer, block Block) error {
+func (p *Peer) requestBlock(writer bufio.Writer, block Block) error {
 	blockBeginSize := 4
 	blockIndexSize := 4
 	blockLengthSize := 4
@@ -90,21 +90,24 @@ func (p *Peer) requestBlock(writer io.Writer, block Block) error {
 		return err
 	}
 
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+
 	return nil
 
 }
 
-func (p *Peer) sendMessage(writer io.Writer, payload []byte, messageId MessageId) error {
+func (p *Peer) sendMessage(writer bufio.Writer, payload []byte, messageId MessageId) error {
 	messageIdLen := 1
 	messagePrefixLen := 4
 	payloadLen := 0
 
 	if payload != nil {
 		payloadLen = len(payload)
-
 	}
 
-	messageBufferLen := messageIdLen + messagePrefixLen + payloadLen
+	messageBufferLen := messagePrefixLen + messageIdLen + payloadLen
 	messageBuffer := make([]byte, messageBufferLen)
 	binary.BigEndian.PutUint32(messageBuffer, uint32(messageIdLen+payloadLen))
 
@@ -113,6 +116,10 @@ func (p *Peer) sendMessage(writer io.Writer, payload []byte, messageId MessageId
 	copy(messageBuffer[index+1:], payload)
 
 	if _, err := writer.Write(messageBuffer); err != nil {
+		return err
+	}
+
+	if err := writer.Flush(); err != nil {
 		return err
 	}
 
@@ -141,17 +148,17 @@ func (p *Peer) verifyHandshakeResponse(response []byte, expectedInfoHash [sha1.S
 	return nil
 }
 
-func (p *Peer) waitForMessage(reader io.Reader, messageId MessageId) (*Message, error) {
+func (p *Peer) waitForMessage(reader bufio.Reader, messageId MessageId) (*Message, error) {
 	messageLenBuf := make([]byte, 4)
 
-	if _, err := io.ReadFull(reader, messageLenBuf); err != nil {
+	if _, err := io.ReadFull(&reader, messageLenBuf); err != nil {
 		return nil, err
 	}
 
 	messageLen := binary.BigEndian.Uint32(messageLenBuf)
 	messageBuffer := make([]byte, messageLen)
 
-	if _, err := io.ReadFull(reader, messageBuffer); err != nil {
+	if _, err := io.ReadFull(&reader, messageBuffer); err != nil {
 		return nil, err
 	}
 
@@ -169,7 +176,8 @@ func (p *Peer) waitForMessage(reader io.Reader, messageId MessageId) (*Message, 
 }
 
 func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(p.IpAddress, strconv.Itoa(int(p.Port))), 3*time.Second)
+	timeout := 3 * time.Second
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(p.IpAddress, strconv.Itoa(int(p.Port))), timeout)
 
 	if err != nil {
 		return nil, err
@@ -180,30 +188,26 @@ func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, err
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 
-	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		return nil, err
-	}
-
 	if _, err := p.EstablishHandshake(conn, infoHash); err != nil {
 		return nil, err
 	}
 
-	if _, err := p.waitForMessage(reader, Bitfield); err != nil {
+	if _, err := p.waitForMessage(*reader, Bitfield); err != nil {
 		return nil, err
 	}
 
-	if err := p.sendMessage(writer, nil, Interested); err != nil {
+	if err := p.sendMessage(*writer, nil, Interested); err != nil {
 		return nil, err
 	}
 
-	if _, err := p.waitForMessage(reader, Unchoke); err != nil {
+	if _, err := p.waitForMessage(*reader, Unchoke); err != nil {
 		return nil, err
 	}
 
 	blocks := piece.GetPieceBlocks()
 
 	for _, block := range blocks {
-		if err := p.requestBlock(writer, block); err != nil {
+		if err := p.requestBlock(*writer, block); err != nil {
 			return nil, err
 		}
 	}
@@ -214,7 +218,7 @@ func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, err
 	downloadedBlocks := make([]Block, numOfBlocks)
 
 	for numOfBlocksDownloaded < numOfBlocks {
-		message, err := p.waitForMessage(reader, Generic)
+		message, err := p.waitForMessage(*reader, Generic)
 
 		if err != nil {
 			return nil, err
