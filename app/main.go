@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
@@ -62,8 +64,17 @@ func main() {
 			}
 
 			port := uint16(portNum)
+			peer := torrent.Peer{IpAddress: host, Port: port}
 
-			handshakeResp, err := trrnt.ConnectToPeer(torrent.Peer{IpAddress: host, Port: port})
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))), 3*time.Second)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			defer conn.Close()
+
+			handshakeResp, err := peer.EstablishHandshake(conn, trrnt.InfoHash)
 
 			if err != nil {
 				log.Fatal(err)
@@ -110,6 +121,41 @@ func main() {
 
 			for _, peer := range peers {
 				fmt.Printf("%s:%d\n", peer.IpAddress, peer.Port)
+			}
+
+			return
+		}
+
+	case "download_piece":
+		{
+			dest := os.Args[3]
+			torrentFilePath := os.Args[4]
+			pieceIndex, err := strconv.Atoi(os.Args[5])
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			trrnt, err := torrent.NewTorrent(torrentFilePath)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			peers, err := trrnt.GetPeers()
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			data, err := peers[0].DownloadPiece(trrnt.Info.Pieces[pieceIndex], trrnt.InfoHash)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if err := os.WriteFile(dest, data, 0644); err != nil {
+				log.Fatal(err)
 			}
 
 			return
