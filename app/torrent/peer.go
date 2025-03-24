@@ -36,8 +36,6 @@ const (
 	Request
 	PieceMessageId
 	Cancel
-
-	Generic
 )
 
 const (
@@ -46,8 +44,8 @@ const (
 	pstrLen             = len(pstr)
 )
 
-func isValidMessageId(Id byte) bool {
-	return Id <= 8
+func (m MessageId) isValid() bool {
+	return m >= Choke && m <= Cancel
 }
 
 func (p *Peer) assembleBlocks(blocks []Block, pieceLength int) []byte {
@@ -60,7 +58,7 @@ func (p *Peer) assembleBlocks(blocks []Block, pieceLength int) []byte {
 	return buffer
 }
 
-func (p *Peer) requestBlock(writer bufio.Writer, block Block) error {
+func (p *Peer) requestBlock(conn net.Conn, writer bufio.Writer, block Block) error {
 	blockBeginSize := 4
 	blockIndexSize := 4
 	blockLengthSize := 4
@@ -86,6 +84,10 @@ func (p *Peer) requestBlock(writer bufio.Writer, block Block) error {
 	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.Length))
 	index += blockLengthSize
 
+	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+
 	if _, err := writer.Write(messageBuffer); err != nil {
 		return err
 	}
@@ -98,7 +100,7 @@ func (p *Peer) requestBlock(writer bufio.Writer, block Block) error {
 
 }
 
-func (p *Peer) sendMessage(writer bufio.Writer, payload []byte, messageId MessageId) error {
+func (p *Peer) sendMessage(conn net.Conn, writer bufio.Writer, payload []byte, messageId MessageId) error {
 	messageIdLen := 1
 	messagePrefixLen := 4
 	payloadLen := 0
@@ -114,6 +116,10 @@ func (p *Peer) sendMessage(writer bufio.Writer, payload []byte, messageId Messag
 	index := 4
 	messageBuffer[index] = byte(messageId)
 	copy(messageBuffer[index+1:], payload)
+
+	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
 
 	if _, err := writer.Write(messageBuffer); err != nil {
 		return err
@@ -170,17 +176,17 @@ func (p *Peer) waitForMessage(conn net.Conn, reader bufio.Reader, messageId Mess
 		return nil, err
 	}
 
-	receivedMessageId := messageBuffer[0]
+	receivedMessageId := MessageId(messageBuffer[0])
 
-	if !isValidMessageId(receivedMessageId) {
+	if !receivedMessageId.isValid() {
 		return nil, fmt.Errorf("received peer message Id '%v' is invalid", receivedMessageId)
 	}
 
-	if messageId != Generic && receivedMessageId != byte(messageId) {
-		return nil, fmt.Errorf("expected received peer message Id to be %v, but got %v", byte(messageId), receivedMessageId)
+	if receivedMessageId != messageId {
+		return nil, fmt.Errorf("expected received peer message Id to be %d, but got %d", messageId, receivedMessageId)
 	}
 
-	return &Message{Id: MessageId(receivedMessageId), Payload: messageBuffer[1:]}, nil
+	return &Message{Id: receivedMessageId, Payload: messageBuffer[1:]}, nil
 }
 
 func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, error) {
@@ -204,7 +210,7 @@ func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, err
 		return nil, err
 	}
 
-	if err := p.sendMessage(*writer, nil, Interested); err != nil {
+	if err := p.sendMessage(conn, *writer, nil, Interested); err != nil {
 		return nil, err
 	}
 
@@ -219,18 +225,14 @@ func (p *Peer) DownloadPiece(piece Piece, infoHash [sha1.Size]byte) ([]byte, err
 	downloadedBlocks := make([]Block, numOfBlocks)
 
 	for numOfBlocksDownloaded < numOfBlocks {
-		if err := p.requestBlock(*writer, blocks[numOfBlocksDownloaded]); err != nil {
+		if err := p.requestBlock(conn, *writer, blocks[numOfBlocksDownloaded]); err != nil {
 			return nil, err
 		}
 
-		message, err := p.waitForMessage(conn, *reader, Generic)
+		message, err := p.waitForMessage(conn, *reader, PieceMessageId)
 
 		if err != nil {
 			return nil, err
-		}
-
-		if message.Id != PieceMessageId {
-			return nil, fmt.Errorf("received an unexpected message type '%d'", message.Id)
 		}
 
 		index := 0
@@ -272,6 +274,10 @@ func (p *Peer) EstablishHandshake(conn net.Conn, infoHash [sha1.Size]byte) ([]by
 	index += copy(messageBuf[index:], make([]byte, 8))
 	index += copy(messageBuf[index:], infoHash[:])
 	index += copy(messageBuf[index:], peerId[:])
+
+	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return nil, err
+	}
 
 	_, writeErr := conn.Write(messageBuf)
 
