@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
@@ -19,6 +20,16 @@ type Message struct {
 }
 
 type MessageId int
+
+type ReadWriteMutex struct {
+	reader sync.Mutex
+	writer sync.Mutex
+}
+
+type RequestMessageResult struct {
+	block torrent.Block
+	err   error
+}
 
 const (
 	Choke MessageId = iota
@@ -38,22 +49,58 @@ const (
 	pstrLen             = len(pstr)
 )
 
+func downloadBlock(conn net.Conn, block torrent.Block, resultQueue chan<- RequestMessageResult, mutex *ReadWriteMutex) {
+	payload := generateBlockRequestPayload(block)
+
+	mutex.writer.Lock()
+	err := sendMessage(conn, Request, payload)
+	mutex.writer.Unlock()
+
+	if err != nil {
+		resultQueue <- RequestMessageResult{err: err}
+		return
+	}
+
+	mutex.reader.Lock()
+	message, err := waitForMessage(conn, PieceMessageId)
+	mutex.reader.Unlock()
+
+	if err != nil {
+		resultQueue <- RequestMessageResult{err: err}
+		return
+	}
+
+	index := 0
+
+	blockPieceIndex := binary.BigEndian.Uint32(message.Payload[index:])
+	index += 4
+
+	blockPieceOffset := binary.BigEndian.Uint32(message.Payload[index:])
+	index += 4
+
+	blockData := message.Payload[index:]
+
+	resultQueue <- RequestMessageResult{
+		block: torrent.Block{
+			Begin:     int(blockPieceOffset),
+			Data:      blockData,
+			Length:    len(blockData),
+			PiceIndex: int(blockPieceIndex),
+		},
+	}
+
+	return
+}
+
 func generateBlockRequestPayload(block torrent.Block) []byte {
 	blockBeginSize := 4
 	blockIndexSize := 4
 	blockLengthSize := 4
-	messageIdSize := 1
-	messageLenPrefixSize := 4
-	messagePayloadSize := blockBeginSize + blockIndexSize + blockLengthSize
-	messageBufferSize := messageLenPrefixSize + messageIdSize + messagePayloadSize
+	messageBufferSize := blockBeginSize + blockIndexSize + blockLengthSize
 
 	messageBuffer := make([]byte, messageBufferSize)
-	binary.BigEndian.PutUint32(messageBuffer, uint32(messageIdSize+messagePayloadSize))
 
-	index := 4
-
-	messageBuffer[index] = byte(Request)
-	index += messageIdSize
+	index := 0
 
 	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.PiceIndex))
 	index += blockIndexSize
@@ -67,7 +114,7 @@ func generateBlockRequestPayload(block torrent.Block) []byte {
 	return messageBuffer
 }
 
-func sendMessage(conn net.Conn, payload []byte, messageId MessageId) error {
+func sendMessage(conn net.Conn, messageId MessageId, payload []byte) error {
 	messageIdLen := 1
 	messagePrefixLen := 4
 	payloadLen := 0
@@ -136,80 +183,6 @@ func waitForMessage(conn net.Conn, messageId MessageId) (*Message, error) {
 	return &Message{Id: receivedMessageId, Payload: messageBuffer[1:]}, nil
 }
 
-func DownloadPiece(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]byte) ([]byte, error) {
-	timeout := 3 * time.Second
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))), timeout)
-
-	if err != nil {
-		return nil, err
-	}
-
-	defer conn.Close()
-
-	if _, err := EstablishHandshake(conn, infoHash); err != nil {
-		return nil, err
-	}
-
-	if _, err := waitForMessage(conn, Bitfield); err != nil {
-		return nil, err
-	}
-
-	if err := sendMessage(conn, nil, Interested); err != nil {
-		return nil, err
-	}
-
-	if _, err := waitForMessage(conn, Unchoke); err != nil {
-		return nil, err
-	}
-
-	blocks := piece.GetBlocks()
-	numOfBlocks := len(blocks)
-	numOfBlocksDownloaded := 0
-
-	downloadedBlocks := make([]torrent.Block, numOfBlocks)
-
-	for numOfBlocksDownloaded < numOfBlocks {
-		payload := generateBlockRequestPayload(blocks[numOfBlocksDownloaded])
-
-		if err := sendMessage(conn, payload, Interested); err != nil {
-			return nil, err
-		}
-
-		message, err := waitForMessage(conn, PieceMessageId)
-
-		if err != nil {
-			return nil, err
-		}
-
-		index := 0
-
-		blockPieceIndex := binary.BigEndian.Uint32(message.Payload[index:])
-		index += 4
-
-		blockPieceOffset := binary.BigEndian.Uint32(message.Payload[index:])
-		index += 4
-
-		blockData := message.Payload[index:]
-
-		downloadedBlockIndex := int(blockPieceOffset / torrent.BlockSize)
-
-		if downloadedBlockIndex >= numOfBlocks {
-			return nil, fmt.Errorf("downloaded block offset %d is invalid", blockPieceOffset)
-		}
-
-		downloadedBlocks[downloadedBlockIndex] = torrent.Block{
-			Begin:     int(blockPieceOffset),
-			Data:      blockData,
-			Length:    len(blockData),
-			PiceIndex: int(blockPieceIndex),
-		}
-
-		numOfBlocksDownloaded += 1
-	}
-
-	return piece.AssembleBlocks(downloadedBlocks), nil
-}
-
 func EstablishHandshake(conn net.Conn, infoHash [sha1.Size]byte) ([]byte, error) {
 	peerId := []byte(utils.GenerateRandomString(20, ""))
 	messageBuffer := make([]byte, handshakeMessageLen)
@@ -236,4 +209,71 @@ func EstablishHandshake(conn net.Conn, infoHash [sha1.Size]byte) ([]byte, error)
 	}
 
 	return responseBuffer, nil
+}
+
+func DownloadPiece(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]byte) ([]byte, error) {
+	timeout := 3 * time.Second
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))), timeout)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer conn.Close()
+
+	if _, err := EstablishHandshake(conn, infoHash); err != nil {
+		return nil, err
+	}
+
+	if _, err := waitForMessage(conn, Bitfield); err != nil {
+		return nil, err
+	}
+
+	if err := sendMessage(conn, Interested, nil); err != nil {
+		return nil, err
+	}
+
+	if _, err := waitForMessage(conn, Unchoke); err != nil {
+		return nil, err
+	}
+
+	blocks := piece.GetBlocks()
+	numOfBlocks := len(blocks)
+	numOfBlocksDownloaded := 0
+
+	downloadedBlocks := make([]torrent.Block, numOfBlocks)
+	mutex := ReadWriteMutex{}
+	requestBatchSize := 3
+	resultsQueue := make(chan RequestMessageResult, requestBatchSize)
+
+	for numOfBlocksDownloaded < numOfBlocks {
+		pendingBlocks := blocks[numOfBlocksDownloaded:]
+		numOfPendingBlocks := len(pendingBlocks)
+
+		currentBatchSize := min(numOfPendingBlocks, requestBatchSize)
+
+		for i := 0; i < currentBatchSize; i++ {
+			go downloadBlock(conn, pendingBlocks[i], resultsQueue, &mutex)
+		}
+
+		for i := 0; i < currentBatchSize; i++ {
+			requestResult := <-resultsQueue
+
+			if requestResult.err != nil {
+				return nil, err
+			}
+
+			downloadedBlock := requestResult.block
+			downloadedBlockIndex := int(downloadedBlock.Begin / torrent.BlockSize)
+
+			if downloadedBlockIndex >= numOfBlocks {
+				return nil, fmt.Errorf("downloaded block offset %d is invalid", downloadedBlock.Begin)
+			}
+
+			downloadedBlocks[downloadedBlockIndex] = downloadedBlock
+			numOfBlocksDownloaded += 1
+		}
+	}
+
+	return piece.AssembleBlocks(downloadedBlocks), nil
 }
