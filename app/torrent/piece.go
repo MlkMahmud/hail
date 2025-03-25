@@ -78,7 +78,17 @@ func parseTorrentPieces(metainfo map[string]any) ([]Piece, error) {
 	return piecesArr, nil
 }
 
-func (p *Piece) GetPieceBlocks() []Block {
+func (p *Piece) AssembleBlocks(blocks []Block) []byte {
+	buffer := make([]byte, p.Length)
+
+	for _, block := range blocks {
+		copy(buffer[block.Begin:], block.Data)
+	}
+
+	return buffer
+}
+
+func (p *Piece) GetBlocks() []Block {
 	blocks := []Block{}
 
 	numOfFullSizedBlocks := int(p.Length / BlockSize)

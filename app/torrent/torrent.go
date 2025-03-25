@@ -15,6 +15,11 @@ import (
 	"github.com/mitchellh/mapstructure"
 )
 
+type Peer struct {
+	IpAddress string
+	Port      uint16
+}
+
 type TorrentInfo struct {
 	Length int     `mapstructure:"length"`
 	Name   string  `mapstructure:"name"`
@@ -26,7 +31,6 @@ type Torrent struct {
 	InfoHash   [sha1.Size]byte
 	TrackerUrl string `mapstructure:"announce"`
 }
-
 
 func NewTorrent(src string) (*Torrent, error) {
 	fileContent, err := os.ReadFile(src)

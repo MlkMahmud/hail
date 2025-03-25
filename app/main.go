@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
+	"github.com/codecrafters-io/bittorrent-starter-go/app/client"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
 )
 
@@ -74,7 +75,7 @@ func main() {
 
 			defer conn.Close()
 
-			handshakeResp, err := peer.EstablishHandshake(conn, trrnt.InfoHash)
+			handshakeResp, err := client.EstablishHandshake(conn, trrnt.InfoHash)
 
 			if err != nil {
 				log.Fatal(err)
@@ -148,7 +149,7 @@ func main() {
 				log.Fatal(err)
 			}
 
-			data, err := peers[0].DownloadPiece(trrnt.Info.Pieces[pieceIndex], trrnt.InfoHash)
+			data, err := client.DownloadPiece(trrnt.Info.Pieces[pieceIndex], peers[0], trrnt.InfoHash)
 
 			if err != nil {
 				log.Fatal(err)

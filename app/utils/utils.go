@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"io"
 	"math/rand"
+	"net"
 	"time"
 )
 
@@ -27,4 +29,50 @@ func GenerateRandomString(length int, charset string) string {
 	}
 
 	return string(byteArr)
+}
+
+func ConnReadFull(conn net.Conn, buffer []byte) (int, error) {
+	bufferSize := len(buffer)
+	readStartIndex := 0
+
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return readStartIndex, err
+	}
+
+	for readStartIndex < bufferSize {
+		bytesRead, err := conn.Read(buffer[readStartIndex:])
+
+		if err == io.EOF {
+			return readStartIndex, io.ErrUnexpectedEOF
+		}
+
+		if err != nil {
+			return readStartIndex, err
+		}
+
+		readStartIndex += bytesRead
+	}
+
+	return readStartIndex, nil
+}
+
+func ConnWriteFull(conn net.Conn, buffer []byte) (int, error) {
+	bufferSize := len(buffer)
+	writeStartIndex := 0
+
+	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return writeStartIndex, err
+	}
+
+	for writeStartIndex < bufferSize {
+		bytesWritten, err := conn.Write(buffer[writeStartIndex:])
+
+		if err != nil {
+			return writeStartIndex, err
+		}
+
+		writeStartIndex += bytesWritten
+	}
+
+	return writeStartIndex, nil
 }
