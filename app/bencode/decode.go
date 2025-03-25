@@ -14,29 +14,29 @@ const (
 	endDelim          = 'e'
 )
 
-func decodeDict(becondedString []byte) (map[string]any, int, error) {
-	bencodedStringLen := len(becondedString)
+func decodeDict(bencodedString []byte) (map[string]any, int, error) {
+	bencodedStringLen := len(bencodedString)
 
 	if bencodedStringLen == 0 {
 		return nil, 0, fmt.Errorf("bencoded list string is too short")
 	}
 
-	if becondedString[0] != dictStartDelim {
+	if bencodedString[0] != dictStartDelim {
 		return nil, 0, fmt.Errorf("missing start delimeter '%c'", dictStartDelim)
 	}
 
 	strIndex := 1
 	decodedDict := map[string]any{}
 
-	for strIndex < bencodedStringLen && becondedString[strIndex] != endDelim {
-		key, valueStartDelimIndex, err := decodeString(becondedString[strIndex:])
+	for strIndex < bencodedStringLen && bencodedString[strIndex] != endDelim {
+		key, valueStartDelimIndex, err := decodeString(bencodedString[strIndex:])
 
 		if err != nil {
 			return nil, 0, err
 		}
 
 		strIndex += valueStartDelimIndex
-		value, nextDelimIndex, err := DecodeValue(becondedString[strIndex:])
+		value, nextDelimIndex, err := DecodeValue(bencodedString[strIndex:])
 
 		if err != nil {
 			return nil, 0, err
@@ -49,22 +49,22 @@ func decodeDict(becondedString []byte) (map[string]any, int, error) {
 	return decodedDict, strIndex + 1, nil
 }
 
-func decodeList(becondedString []byte) ([]any, int, error) {
-	bencodedStringLen := len(becondedString)
+func decodeList(bencodedString []byte) ([]any, int, error) {
+	bencodedStringLen := len(bencodedString)
 
 	if bencodedStringLen == 0 {
 		return nil, 0, fmt.Errorf("bencoded list string is too short")
 	}
 
-	if becondedString[0] != listStartDelim {
+	if bencodedString[0] != listStartDelim {
 		return nil, 0, fmt.Errorf("missing start delimeter '%c'", listStartDelim)
 	}
 
 	decodedList := []any{}
 	stringIndex := 1
 
-	for stringIndex < bencodedStringLen && becondedString[stringIndex] != endDelim {
-		decodedValue, nextDelimIndex, err := DecodeValue(becondedString[stringIndex:])
+	for stringIndex < bencodedStringLen && bencodedString[stringIndex] != endDelim {
+		decodedValue, nextDelimIndex, err := DecodeValue(bencodedString[stringIndex:])
 
 		if err != nil {
 			return nil, 0, err
@@ -78,7 +78,7 @@ func decodeList(becondedString []byte) ([]any, int, error) {
 		return nil, 0, fmt.Errorf("unexpected end of input")
 	}
 
-	if becondedString[stringIndex] != endDelim {
+	if bencodedString[stringIndex] != endDelim {
 		return nil, 0, fmt.Errorf("missing end delimiter '%c'", endDelim)
 	}
 
