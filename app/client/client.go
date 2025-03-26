@@ -350,10 +350,11 @@ func Download(torrentFile string, dest string) error {
 
 			numOfPiecesDownloaded += 1
 		}
-
-		if err := utils.MergeDirectoryToFile(tempDir, dest); err != nil {
-			return err
-		}
 	}
+
+	if err := utils.MergeDirectoryToFile(tempDir, dest); err != nil {
+		return err
+	}
+
 	return nil
 }
