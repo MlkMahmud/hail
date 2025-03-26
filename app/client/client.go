@@ -56,6 +56,16 @@ const (
 	pstrLen             = len(pstr)
 )
 
+func (d *DownloadedPiece) checkHashIntegrity() error {
+	downloadedPieceHash := sha1.Sum(d.Data)
+
+	if bytes.Equal(downloadedPieceHash[:], d.Piece.Hash[:]) {
+		return nil
+	}
+
+	return fmt.Errorf("hash '%x' for downloaded piece at index '%d' does not match expected '%x'", downloadedPieceHash, d.Piece.Index, d.Piece.Hash)
+}
+
 func downloadBlock(conn net.Conn, block torrent.Block, resultQueue chan<- RequestMessageResult, mutex *ReadWriteMutex) {
 	payload := generateBlockRequestPayload(block)
 
@@ -326,11 +336,15 @@ func Download(torrentFile string, dest string) error {
 
 				if err != nil {
 					downloadedPieces <- DownloadedPiece{Err: err}
+					return
+				}
+
+				if err := downloadedPiece.checkHashIntegrity(); err != nil {
+					downloadedPieces <- DownloadedPiece{Err: err}
+					return
 				}
 
 				downloadedPieces <- *downloadedPiece
-
-				// todo: verify hash of downloaded piece
 				return
 			}(pendingPieces[i], peers[i], trrnt.InfoHash)
 		}
