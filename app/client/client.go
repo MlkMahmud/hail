@@ -342,7 +342,7 @@ func Download(torrentFile string, dest string) error {
 				return err
 			}
 
-			file := filepath.Join(tempDir, fmt.Sprintf("%d.piece", downloadedPiece.Piece.Index))
+			file := filepath.Join(tempDir, fmt.Sprintf("%02d.piece", downloadedPiece.Piece.Index))
 
 			if err := os.WriteFile(file, downloadedPiece.Data, 0666); err != nil {
 				return err
