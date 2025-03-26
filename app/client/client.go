@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -14,13 +16,18 @@ import (
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
 )
 
+type DownloadedPiece struct {
+	Data  []byte
+	Err   error
+	Piece torrent.Piece
+}
+
 type Message struct {
 	Id      MessageId
 	Payload []byte
 }
 
 type MessageId int
-
 type ReadWriteMutex struct {
 	reader sync.Mutex
 	writer sync.Mutex
@@ -211,7 +218,7 @@ func EstablishHandshake(conn net.Conn, infoHash [sha1.Size]byte) ([]byte, error)
 	return responseBuffer, nil
 }
 
-func DownloadPiece(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]byte) ([]byte, error) {
+func DownloadPiece(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]byte) (*DownloadedPiece, error) {
 	timeout := 3 * time.Second
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))), timeout)
 
@@ -275,5 +282,78 @@ func DownloadPiece(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]b
 		}
 	}
 
-	return piece.AssembleBlocks(downloadedBlocks), nil
+	return &DownloadedPiece{
+		Data:  piece.AssembleBlocks(downloadedBlocks),
+		Piece: piece,
+	}, nil
+}
+
+func Download(torrentFile string, dest string) error {
+	trrnt, err := torrent.NewTorrent(torrentFile)
+
+	if err != nil {
+		return err
+	}
+
+	peers, err := trrnt.GetPeers()
+
+	if err != nil {
+		return err
+	}
+
+	numOfPiecesDownloaded := 0
+	numOfPiecesToDownload := len(trrnt.Info.Pieces)
+
+	requestBatchSize := len(peers)
+	downloadedPieces := make(chan DownloadedPiece, requestBatchSize)
+
+	tempDir, err := os.MkdirTemp("", trrnt.Info.Name)
+
+	if err != nil {
+		return err
+	}
+
+	defer os.RemoveAll(tempDir)
+
+	for numOfPiecesDownloaded < numOfPiecesToDownload {
+		pendingPieces := trrnt.Info.Pieces[numOfPiecesDownloaded:]
+		numOfPendingPieces := len(pendingPieces)
+		currentBatchSize := min(requestBatchSize, numOfPendingPieces)
+
+		for i := 0; i < currentBatchSize; i++ {
+			go func(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]byte) {
+				downloadedPiece, err := DownloadPiece(piece, peer, infoHash)
+
+				if err != nil {
+					downloadedPieces <- DownloadedPiece{Err: err}
+				}
+
+				downloadedPieces <- *downloadedPiece
+
+				// todo: verify hash of downloaded piece
+				return
+			}(pendingPieces[i], peers[i], trrnt.InfoHash)
+		}
+
+		for i := 0; i < currentBatchSize; i++ {
+			downloadedPiece := <-downloadedPieces
+
+			if downloadedPiece.Err != nil {
+				return err
+			}
+
+			file := filepath.Join(tempDir, fmt.Sprintf("%d.piece", downloadedPiece.Piece.Index))
+
+			if err := os.WriteFile(file, downloadedPiece.Data, 0666); err != nil {
+				return err
+			}
+
+			numOfPiecesDownloaded += 1
+		}
+
+		if err := utils.MergeDirectoryToFile(tempDir, dest); err != nil {
+			return err
+		}
+	}
+	return nil
 }

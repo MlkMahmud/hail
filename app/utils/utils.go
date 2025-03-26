@@ -4,6 +4,8 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -16,20 +18,6 @@ var (
 	seededRand *rand.Rand = rand.New(
 		rand.NewSource(time.Now().UnixNano()))
 )
-
-func GenerateRandomString(length int, charset string) string {
-	if charset == "" {
-		charset = defaultCharacterSet
-	}
-
-	byteArr := make([]byte, length)
-
-	for i := range byteArr {
-		byteArr[i] = charset[seededRand.Intn(len(charset))]
-	}
-
-	return string(byteArr)
-}
 
 func ConnReadFull(conn net.Conn, buffer []byte) (int, error) {
 	bufferSize := len(buffer)
@@ -75,4 +63,49 @@ func ConnWriteFull(conn net.Conn, buffer []byte) (int, error) {
 	}
 
 	return writeStartIndex, nil
+}
+
+func GenerateRandomString(length int, charset string) string {
+	if charset == "" {
+		charset = defaultCharacterSet
+	}
+
+	byteArr := make([]byte, length)
+
+	for i := range byteArr {
+		byteArr[i] = charset[seededRand.Intn(len(charset))]
+	}
+
+	return string(byteArr)
+}
+
+func MergeDirectoryToFile(dir string, dest string) error {
+	destFile, err := os.OpenFile(dest, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+
+	if err != nil {
+		return err
+	}
+
+	defer destFile.Close()
+
+	entries, err := os.ReadDir(dir)
+
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		contents, err := os.ReadFile(path)
+
+		if err != nil {
+			return nil
+		}
+
+		if _, err := destFile.Write(contents); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

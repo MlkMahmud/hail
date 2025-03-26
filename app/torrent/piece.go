@@ -23,13 +23,13 @@ const (
 )
 
 func parseTorrentPieces(metainfo map[string]any) ([]Piece, error) {
-	infoValue, ok := metainfo["info"].(map[string]any)
+	infoDict, ok := metainfo["info"].(map[string]any)
 
 	if !ok {
-		return nil, fmt.Errorf("expected the 'info' property of the metainfo dict to be a dict, but got %T", infoValue)
+		return nil, fmt.Errorf("expected the 'info' property of the metainfo dict to be a dict, but got %T", infoDict)
 	}
 
-	pieceHashes, ok := infoValue["pieces"].(string)
+	pieceHashes, ok := infoDict["pieces"].(string)
 
 	if !ok {
 		return nil, fmt.Errorf("expected the 'pieces' property of the info dict to be a string, but got %T", pieceHashes)
@@ -45,13 +45,13 @@ func parseTorrentPieces(metainfo map[string]any) ([]Piece, error) {
 		return nil, fmt.Errorf("pieces length must be a multiple of %d", sha1.Size)
 	}
 
-	pieceLen, ok := infoValue["piece length"].(int)
+	pieceLen, ok := infoDict["piece length"].(int)
 
 	if !ok {
 		return nil, fmt.Errorf("expected the 'piece length' property of the info dict to be an integer, but got %T", pieceLen)
 	}
 
-	fileLen, ok := infoValue["length"].(int)
+	fileLen, ok := infoDict["length"].(int)
 
 	if !ok {
 		return nil, fmt.Errorf("expected the 'length' property of the info dict to be an integer, but got %T", fileLen)

@@ -127,6 +127,18 @@ func main() {
 			return
 		}
 
+	case "download":
+		{
+			dest := os.Args[3]
+			torrentFilePath := os.Args[4]
+
+			if err := client.Download(torrentFilePath, dest); err != nil {
+				log.Fatal(err)
+			}
+
+			return
+		}
+
 	case "download_piece":
 		{
 			dest := os.Args[3]
@@ -149,13 +161,13 @@ func main() {
 				log.Fatal(err)
 			}
 
-			data, err := client.DownloadPiece(trrnt.Info.Pieces[pieceIndex], peers[0], trrnt.InfoHash)
+			downloadedPiece, err := client.DownloadPiece(trrnt.Info.Pieces[pieceIndex], peers[0], trrnt.InfoHash)
 
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			if err := os.WriteFile(dest, data, 0644); err != nil {
+			if err := os.WriteFile(dest, downloadedPiece.Data, 0644); err != nil {
 				log.Fatal(err)
 			}
 
