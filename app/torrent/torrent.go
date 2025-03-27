@@ -145,19 +145,24 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 
 func (t *Torrent) getTrackerUrlWithParams() string {
 	params := url.Values{}
+	length := t.Info.Length
+
+	if length == 0 {
+		// set length to a random value if the length of the torrent file is not known yet
+		length = 999
+	}
 
 	params.Add("info_hash", string(t.InfoHash[:]))
 	params.Add("peer_id", utils.GenerateRandomString(20, ""))
 	params.Add("port", "6881")
 	params.Add("downloaded", "0")
 	params.Add("uploaded", "0")
-	params.Add("left", strconv.Itoa(t.Info.Length))
+	params.Add("left", strconv.Itoa(length))
 	params.Add("compact", "1")
 
 	queryString := params.Encode()
 
 	return fmt.Sprintf("%s?%s", t.TrackerUrl, queryString)
-
 }
 
 func (t *Torrent) GetPeers() ([]Peer, error) {

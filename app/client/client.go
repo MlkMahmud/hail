@@ -207,7 +207,12 @@ func EstablishHandshake(conn net.Conn, infoHash [sha1.Size]byte) ([]byte, error)
 
 	index := 1
 	index += copy(messageBuffer[index:], []byte(pstr))
-	index += copy(messageBuffer[index:], make([]byte, 8))
+	index += copy(messageBuffer[index:], make([]byte, 5))
+
+	messageBuffer[index] = byte(16)
+	index += 1
+
+	index += copy(messageBuffer[index:], make([]byte, 2))
 	index += copy(messageBuffer[index:], infoHash[:])
 	index += copy(messageBuffer[index:], peerId[:])
 

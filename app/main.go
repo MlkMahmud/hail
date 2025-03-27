@@ -105,6 +105,43 @@ func main() {
 			return
 		}
 
+	case "magnet_handshake":
+		{
+			magnetLink := os.Args[2]
+
+			trrnt, err := torrent.NewTorrent(magnetLink)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			peers, err := trrnt.GetPeers()
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			peer := peers[0]
+
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))), 3*time.Second)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			defer conn.Close()
+
+			handshakeResp, err := client.EstablishHandshake(conn, trrnt.InfoHash)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			fmt.Printf("Peer ID: %x\n", handshakeResp[48:])
+
+			return
+		}
+
 	case "peers":
 		{
 			torrentFilePath := os.Args[2]
