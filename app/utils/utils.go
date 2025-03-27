@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"io"
 	"math/rand"
 	"net"
@@ -18,6 +19,12 @@ var (
 	seededRand *rand.Rand = rand.New(
 		rand.NewSource(time.Now().UnixNano()))
 )
+
+func CheckIfFileExists(filepath string) bool {
+	_, err := os.Stat(filepath)
+
+	return !errors.Is(err, os.ErrNotExist)
+}
 
 func ConnReadFull(conn net.Conn, buffer []byte) (int, error) {
 	bufferSize := len(buffer)

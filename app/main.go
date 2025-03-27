@@ -174,6 +174,22 @@ func main() {
 			return
 		}
 
+	case "magnet_parse":
+		{
+			magnetLink := os.Args[2]
+
+			trrnt, err := torrent.NewTorrent(magnetLink)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			fmt.Printf("Tracker URL: %s\n", trrnt.TrackerUrl)
+			fmt.Printf("Info Hash: %x\n", trrnt.InfoHash)
+
+			return
+		}
+
 	default:
 		{
 			fmt.Println("Unknown command: " + command)

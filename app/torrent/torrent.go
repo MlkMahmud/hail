@@ -3,12 +3,14 @@ package torrent
 import (
 	"crypto/sha1"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
@@ -32,8 +34,37 @@ type Torrent struct {
 	TrackerUrl string `mapstructure:"announce"`
 }
 
-func NewTorrent(src string) (*Torrent, error) {
-	fileContent, err := os.ReadFile(src)
+func getInfoHashFromQueryString(queryString string) (*[sha1.Size]byte, error) {
+	expectedInfoHashStringLength := 40
+	infoHashPrefix := "urn:btih:"
+
+	if !strings.HasPrefix(queryString, infoHashPrefix) {
+		return nil, fmt.Errorf("info hash value contains an invalid prefix. expected '%s' got '%s'", infoHashPrefix, queryString)
+	}
+
+	infoHashString := queryString[len(infoHashPrefix):]
+
+	if infoHashStringLength := len(infoHashString); infoHashStringLength != expectedInfoHashStringLength {
+		return nil, fmt.Errorf("hex encoded info hash string length should be '%d' long, but received string length is %d", expectedInfoHashStringLength, infoHashStringLength)
+	}
+
+	decodedString, err := hex.DecodeString(infoHashString)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to decoded hex encoded string %w", err)
+	}
+
+	if decodedStringLength := len(decodedString); decodedStringLength != sha1.Size {
+		return nil, fmt.Errorf("decoded info hash string length should be '%d' long, but received string length is %d", sha1.Size, decodedStringLength)
+	}
+
+	infoHash := [sha1.Size]byte(decodedString)
+
+	return &infoHash, nil
+}
+
+func generateTorrentFromFile(torrentFilepath string) (*Torrent, error) {
+	fileContent, err := os.ReadFile(torrentFilepath)
 
 	if err != nil {
 		return nil, err
@@ -74,7 +105,42 @@ func NewTorrent(src string) (*Torrent, error) {
 	torrent.Info.Pieces = pieces
 
 	return &torrent, nil
+}
 
+func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
+	parsedUrl, err := url.Parse(magnetLink)
+
+	if err != nil {
+		return nil, err
+	}
+
+	params, err := url.ParseQuery(parsedUrl.RawQuery)
+
+	if err != nil {
+		return nil, err
+	}
+
+	for key, value := range map[string]string{"dn": "name", "tr": "tracker url", "xt": "info hash"} {
+		received, ok := params[key]
+
+		if !ok || len(received) != 1 {
+			return nil, fmt.Errorf("magnet link '%s' parameter is invalid. received value %v", value, received)
+		}
+	}
+
+	infoHash, err := getInfoHashFromQueryString(params["xt"][0])
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &Torrent{
+		Info: TorrentInfo{
+			Name: params["dn"][0],
+		},
+		InfoHash:   *infoHash,
+		TrackerUrl: params["tr"][0],
+	}, nil
 }
 
 func (t *Torrent) getTrackerUrlWithParams() string {
@@ -164,4 +230,19 @@ func (t *Torrent) GetPeers() ([]Peer, error) {
 	}
 
 	return peersArr, nil
+}
+
+func NewTorrent(torrentFileOrMagnetLink string) (*Torrent, error) {
+	var torrent *Torrent
+	var err error
+
+	if utils.CheckIfFileExists(torrentFileOrMagnetLink) {
+		torrent, err = generateTorrentFromFile(torrentFileOrMagnetLink)
+
+		return torrent, err
+	}
+
+	torrent, err = generateTorrentFromMagnetLink(torrentFileOrMagnetLink)
+
+	return torrent, err
 }
