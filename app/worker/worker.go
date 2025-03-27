@@ -14,8 +14,6 @@ import (
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
 )
 
-type Extension int
-
 type Message struct {
 	Id      MessageId
 	Payload []byte
@@ -29,10 +27,6 @@ type Worker struct {
 }
 
 const (
-	Metadata Extension = iota + 1
-)
-
-const (
 	Choke MessageId = iota
 	Unchoke
 	Interested
@@ -42,6 +36,7 @@ const (
 	Request
 	PieceMessageId
 	Cancel
+	Extension = 20
 )
 
 const (
@@ -149,7 +144,7 @@ func (w *Worker) ReceiveMessage(messageId MessageId) (*Message, error) {
 func (w *Worker) SendExtensionHandshake() error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"m": map[string]any{
-			"ut_metadata": int(Metadata),
+			"ut_metadata": 1,
 		},
 	})
 
@@ -158,15 +153,18 @@ func (w *Worker) SendExtensionHandshake() error {
 	}
 
 	messageIdLength := 1
-	messagePayloadLength := len(bencodedString)
+	messagePayloadLength := len(bencodedString) + 1 // one extra byte for the extension message Id (different from the message Id)
 	messagePrefixLength := 4
 
 	messageBuffer := make([]byte, messageIdLength+messagePayloadLength+messagePrefixLength)
 	binary.BigEndian.PutUint32(messageBuffer, uint32(messageIdLength+messagePayloadLength))
 
 	index := 4
-	// message Id for an extension Id is 0
-	messageBuffer[index] = byte(0)
+	// message Id for an extension Id is 20
+	messageBuffer[index] = byte(Extension)
+	index += 1
+
+	messageBuffer[index] = byte(0) // write the extension message Id (0)
 	index += 1
 
 	copy(messageBuffer[index:], []byte(bencodedString))
