@@ -13,6 +13,7 @@ import (
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/client"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
+	"github.com/codecrafters-io/bittorrent-starter-go/app/worker"
 )
 
 func main() {
@@ -122,23 +123,27 @@ func main() {
 			}
 
 			peer := peers[0]
-
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))), 3*time.Second)
+			wrkr, err := worker.NewWorker(peer, trrnt.InfoHash)
 
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			defer conn.Close()
+			defer wrkr.Conn.Close()
 
-			handshakeResp, err := client.EstablishHandshake(conn, trrnt.InfoHash)
+			handshakeResp, err := wrkr.EstablishHandshake()
 
 			if err != nil {
 				log.Fatal(err)
+			}
+
+			if wrkr.SupportsExtensions(handshakeResp) {
+				if err := wrkr.SendExtensionHandshake(); err != nil {
+					log.Fatal(err)
+				}
 			}
 
 			fmt.Printf("Peer ID: %x\n", handshakeResp[48:])
-
 			return
 		}
 

@@ -79,7 +79,7 @@ func downloadBlock(conn net.Conn, block torrent.Block, resultQueue chan<- Reques
 	}
 
 	mutex.reader.Lock()
-	message, err := waitForMessage(conn, PieceMessageId)
+	message, err := receiveMessage(conn, PieceMessageId)
 	mutex.reader.Unlock()
 
 	if err != nil {
@@ -177,7 +177,7 @@ func verifyHandshakeResponse(response []byte, expectedInfoHash [sha1.Size]byte) 
 	return nil
 }
 
-func waitForMessage(conn net.Conn, messageId MessageId) (*Message, error) {
+func receiveMessage(conn net.Conn, messageId MessageId) (*Message, error) {
 	messageLenBuffer := make([]byte, 4)
 
 	if _, err := utils.ConnReadFull(conn, messageLenBuffer); err != nil {
@@ -247,7 +247,7 @@ func DownloadPiece(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]b
 		return nil, err
 	}
 
-	if _, err := waitForMessage(conn, Bitfield); err != nil {
+	if _, err := receiveMessage(conn, Bitfield); err != nil {
 		return nil, err
 	}
 
@@ -255,7 +255,7 @@ func DownloadPiece(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]b
 		return nil, err
 	}
 
-	if _, err := waitForMessage(conn, Unchoke); err != nil {
+	if _, err := receiveMessage(conn, Unchoke); err != nil {
 		return nil, err
 	}
 
