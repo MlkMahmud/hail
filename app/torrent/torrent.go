@@ -1,6 +1,7 @@
 package torrent
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
@@ -32,6 +33,101 @@ type Torrent struct {
 	Info       TorrentInfo `mapstructure:"info"`
 	InfoHash   [sha1.Size]byte
 	TrackerUrl string `mapstructure:"announce"`
+}
+
+func (t *Torrent) downloadMetadata() (*TorrentInfo, error) {
+	hasDownloadedAllPieces := false
+	index := 0
+	metadataBuffer := []byte{}
+	peers, err := t.GetPeers()
+	numOfPeers := len(peers)
+
+	if err != nil {
+		return nil, err
+	}
+
+	for i := 0; i < numOfPeers && hasDownloadedAllPieces != true; i++ {
+		peerConnection := NewPeerConnection(peers[i], t.InfoHash)
+
+		err := peerConnection.InitPeerConnection()
+
+		if peerConnection.Conn != nil {
+			defer peerConnection.Conn.Close()
+		}
+
+		if err != nil {
+			continue
+		}
+
+		for {
+			metadataPiece, err := downloadMetadataPiece(*peerConnection, index)
+
+			if err != nil {
+				break
+			}
+
+			metadataBuffer = append(metadataBuffer, metadataPiece...)
+			index += 1
+
+			//  If it is not the last piece of the metadata, it MUST be 16kiB (BlockSize).
+			if len(metadataPiece) != BlockSize {
+				hasDownloadedAllPieces = true
+				break
+			}
+		}
+	}
+
+	if !hasDownloadedAllPieces || len(metadataBuffer) == 0 {
+		return nil, fmt.Errorf("failed to download torrent metadata from %d peers", len(peers))
+	}
+
+	metadataHash := sha1.Sum(metadataBuffer)
+
+	if !bytes.Equal(t.InfoHash[:], metadataHash[:]) {
+		return nil, fmt.Errorf("downloaded metadata hash is does not match torrent info hash")
+	}
+
+	decoded, _, err := bencode.DecodeValue(metadataBuffer)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode downloaded metadata: %w", err)
+	}
+
+	infoDict, ok := decoded.(map[string]any)
+
+	if !ok {
+		return nil, fmt.Errorf("expected the decoded payload to be a dict, but got %T", infoDict)
+	}
+
+	var torrentInfo TorrentInfo
+
+	if err := mapstructure.Decode(infoDict, &torrentInfo); err != nil {
+		return nil, err
+	}
+
+	pieces, err := parseTorrentPieces(infoDict)
+
+	if err != nil {
+		return nil, err
+	}
+
+	torrentInfo.Pieces = pieces
+
+	return &torrentInfo, nil
+}
+
+func downloadMetadataPiece(p PeerConnection, pieceIndex int) ([]byte, error) {
+	if err := p.sendMetadataRequestMessage(pieceIndex); err != nil {
+		return nil, err
+	}
+
+	piece, err := p.receiveMetadataMessage()
+
+	if err != nil {
+		return nil, err
+	}
+
+	return piece, nil
 }
 
 func getInfoHashFromQueryString(queryString string) (*[sha1.Size]byte, error) {
@@ -88,7 +184,13 @@ func generateTorrentFromFile(torrentFilepath string) (*Torrent, error) {
 		return nil, err
 	}
 
-	encodedValue, err := bencode.EncodeValue(trrntDict["info"])
+	infoDict, ok := trrntDict["info"].(map[string]any)
+
+	if !ok {
+		return nil, fmt.Errorf("expected the 'info' property of the metainfo dict to be a dict, but got %T", infoDict)
+	}
+
+	encodedValue, err := bencode.EncodeValue(infoDict)
 
 	if err != nil {
 		return nil, err
@@ -96,7 +198,7 @@ func generateTorrentFromFile(torrentFilepath string) (*Torrent, error) {
 
 	torrent.InfoHash = sha1.Sum([]byte(encodedValue))
 
-	pieces, err := parseTorrentPieces(trrntDict)
+	pieces, err := parseTorrentPieces(infoDict)
 
 	if err != nil {
 		return nil, err
@@ -141,6 +243,33 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 		InfoHash:   *infoHash,
 		TrackerUrl: params["tr"][0],
 	}, nil
+}
+
+func NewTorrent(torrentFileOrMagnetLink string) (*Torrent, error) {
+	var torrent *Torrent
+	var err error
+
+	if utils.CheckIfFileExists(torrentFileOrMagnetLink) {
+		torrent, err = generateTorrentFromFile(torrentFileOrMagnetLink)
+
+		return torrent, err
+	}
+
+	torrent, err = generateTorrentFromMagnetLink(torrentFileOrMagnetLink)
+
+	// Torrents created with from a magnet link will not include metadata for the torrent on creation.
+	// We have to get it from a peer using the metadata extension
+	if torrent.Info.Pieces == nil {
+		torrentInfo, err := torrent.downloadMetadata()
+
+		if err != nil {
+			return nil, err
+		}
+
+		torrent.Info = *torrentInfo
+	}
+
+	return torrent, err
 }
 
 func (t *Torrent) getTrackerUrlWithParams() string {
@@ -235,19 +364,4 @@ func (t *Torrent) GetPeers() ([]Peer, error) {
 	}
 
 	return peersArr, nil
-}
-
-func NewTorrent(torrentFileOrMagnetLink string) (*Torrent, error) {
-	var torrent *Torrent
-	var err error
-
-	if utils.CheckIfFileExists(torrentFileOrMagnetLink) {
-		torrent, err = generateTorrentFromFile(torrentFileOrMagnetLink)
-
-		return torrent, err
-	}
-
-	torrent, err = generateTorrentFromMagnetLink(torrentFileOrMagnetLink)
-
-	return torrent, err
 }

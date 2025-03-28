@@ -169,37 +169,20 @@ func main() {
 			}
 
 			peer := peers[0]
-			peerConnection, err := torrent.NewPeerConnection(peer, trrnt.InfoHash)
+			peerConnection := torrent.NewPeerConnection(peer, trrnt.InfoHash)
 
-			if err != nil {
+			if err := peerConnection.InitPeerConnection(); err != nil {
 				log.Fatal(err)
 			}
 
 			defer peerConnection.Conn.Close()
 
-			handshakeResp, err := peerConnection.EstablishHandshake()
-
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			if _, err := peerConnection.ReceiveMessage(torrent.Bitfield); err != nil {
-				log.Fatal(err)
-			}
+			fmt.Printf("Peer ID: %x\n", peerConnection.PeerId)
 
 			if peerConnection.SupportsExtensions {
-
-				if err := peerConnection.SendExtensionHandshakeMessage(); err != nil {
-					log.Fatal(err)
-				}
-
-				if err := peerConnection.ReceiveExtensionHandshakeMessage(); err != nil {
-					log.Fatal(err)
-				}
+				fmt.Printf("Peer Metadata Extension ID: %d\n", peerConnection.Extensions[torrent.Metadata])
 			}
 
-			fmt.Printf("Peer ID: %x\n", handshakeResp[48:])
-			fmt.Printf("Peer Metadata Extension ID: %d\n", peerConnection.Extensions[torrent.Metadata])
 			return
 		}
 
@@ -213,47 +196,15 @@ func main() {
 				log.Fatal(err)
 			}
 
-			peers, err := trrnt.GetPeers()
-
-			if err != nil {
-				log.Fatal(err)
+			fmt.Printf("Tracker URL: %s\n", trrnt.TrackerUrl)
+			fmt.Printf("Length: %d\n", trrnt.Info.Length)
+			fmt.Printf("Info Hash: %x\n", trrnt.InfoHash)
+			fmt.Printf("Piece Length: %d\n", trrnt.Info.Pieces[0].Length)
+			fmt.Println("Piece Hashes:")
+			for _, piece := range trrnt.Info.Pieces {
+				fmt.Printf("%x\n", piece.Hash)
 			}
 
-			peer := peers[0]
-			peerConnection, err := torrent.NewPeerConnection(peer, trrnt.InfoHash)
-
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			defer peerConnection.Conn.Close()
-
-			handshakeResp, err := peerConnection.EstablishHandshake()
-
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			if _, err := peerConnection.ReceiveMessage(torrent.Bitfield); err != nil {
-				log.Fatal(err)
-			}
-
-			if peerConnection.SupportsExtensions {
-				if err := peerConnection.SendExtensionHandshakeMessage(); err != nil {
-					log.Fatal(err)
-				}
-
-				if err := peerConnection.ReceiveExtensionHandshakeMessage(); err != nil {
-					log.Fatal(err)
-				}
-
-				if err := peerConnection.SendMetadataRequestMessage(); err != nil {
-					log.Fatal(err)
-				}
-			}
-
-			fmt.Printf("Peer ID: %x\n", handshakeResp[48:])
-			fmt.Printf("Peer Metadata Extension ID: %d\n", peerConnection.Extensions[torrent.Metadata])
 			return
 		}
 

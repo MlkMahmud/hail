@@ -22,13 +22,7 @@ const (
 	BlockSize = 16384
 )
 
-func parseTorrentPieces(metainfo map[string]any) ([]Piece, error) {
-	infoDict, ok := metainfo["info"].(map[string]any)
-
-	if !ok {
-		return nil, fmt.Errorf("expected the 'info' property of the metainfo dict to be a dict, but got %T", infoDict)
-	}
-
+func parseTorrentPieces(infoDict map[string]any) ([]Piece, error) {
 	pieceHashes, ok := infoDict["pieces"].(string)
 
 	if !ok {
