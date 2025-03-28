@@ -200,6 +200,10 @@ func main() {
 				log.Fatal(err)
 			}
 
+			if err := trrnt.DownloadMetadata(); err != nil {
+				log.Fatal(err)
+			}
+
 			fmt.Printf("Tracker URL: %s\n", trrnt.TrackerUrl)
 			fmt.Printf("Length: %d\n", trrnt.Info.Length)
 			fmt.Printf("Info Hash: %x\n", trrnt.InfoHash)
