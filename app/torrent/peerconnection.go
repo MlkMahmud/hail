@@ -1,4 +1,4 @@
-package worker
+package torrent
 
 import (
 	"bytes"
@@ -10,33 +10,7 @@ import (
 	"time"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
-	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
-)
-
-type Message struct {
-	Id      MessageId
-	Payload []byte
-}
-
-type MessageId int
-
-type Worker struct {
-	Conn     net.Conn
-	InfoHash [sha1.Size]byte
-}
-
-const (
-	Choke MessageId = iota
-	Unchoke
-	Interested
-	NotInterested
-	Have
-	Bitfield
-	Request
-	PieceMessageId
-	Cancel
-	Extension = 20
 )
 
 const (
@@ -45,20 +19,21 @@ const (
 	pstrLen             = len(pstr)
 )
 
-func NewWorker(peer torrent.Peer, infoHash [sha1.Size]byte) (*Worker, error) {
+func NewPeerConnection(peer Peer, infoHash [sha1.Size]byte) (*PeerConnection, error) {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))), 5*time.Second)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return &Worker{
+	return &PeerConnection{
 		Conn:     conn,
 		InfoHash: infoHash,
+		Peer:     peer,
 	}, nil
 }
 
-func (w *Worker) SupportsExtensions(handshakeResponse []byte) bool {
+func (w *PeerConnection) SupportsExtensions(handshakeResponse []byte) bool {
 	if len(handshakeResponse) != handshakeMessageLen {
 		return false
 	}
@@ -71,7 +46,7 @@ func (w *Worker) SupportsExtensions(handshakeResponse []byte) bool {
 
 }
 
-func (w *Worker) EstablishHandshake() ([]byte, error) {
+func (w *PeerConnection) EstablishHandshake() ([]byte, error) {
 	peerId := []byte(utils.GenerateRandomString(20, ""))
 	messageBuffer := make([]byte, handshakeMessageLen)
 	messageBuffer[0] = byte(pstrLen)
@@ -118,7 +93,7 @@ func (w *Worker) EstablishHandshake() ([]byte, error) {
 	return responseBuffer, nil
 }
 
-func (w *Worker) ReceiveMessage(messageId MessageId) (*Message, error) {
+func (w *PeerConnection) ReceiveMessage(messageId MessageId) (*Message, error) {
 	messageLengthBuffer := make([]byte, 4)
 
 	if _, err := utils.ConnReadFull(w.Conn, messageLengthBuffer); err != nil {
@@ -141,7 +116,7 @@ func (w *Worker) ReceiveMessage(messageId MessageId) (*Message, error) {
 	return &Message{Id: receivedMessageId, Payload: messageBuffer[1:]}, nil
 }
 
-func (w *Worker) SendExtensionHandshake() error {
+func (w *PeerConnection) SendExtensionHandshake() error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"m": map[string]any{
 			"ut_metadata": 1,
@@ -176,7 +151,7 @@ func (w *Worker) SendExtensionHandshake() error {
 	return nil
 }
 
-func (w *Worker) SendMessage(messageId MessageId, payload []byte) error {
+func (w *PeerConnection) SendMessage(messageId MessageId, payload []byte) error {
 	messageIdLen := 1
 	messagePrefixLen := 4
 	payloadLen := 0
