@@ -171,16 +171,20 @@ func main() {
 			peer := peers[0]
 			peerConnection := torrent.NewPeerConnection(peer, trrnt.InfoHash)
 
-			if err := peerConnection.InitPeerConnection(); err != nil {
-				log.Fatal(err)
+			initErr := peerConnection.InitPeerConnection()
+
+			if peerConnection.Conn != nil {
+				defer peerConnection.Conn.Close()
 			}
 
-			defer peerConnection.Conn.Close()
+			if initErr != nil {
+				log.Fatal(initErr)
+			}
 
 			fmt.Printf("Peer ID: %x\n", peerConnection.PeerId)
 
 			if peerConnection.SupportsExtensions {
-				fmt.Printf("Peer Metadata Extension ID: %d\n", peerConnection.Extensions[torrent.Metadata])
+				fmt.Printf("Peer Metadata Extension ID: %d\n", peerConnection.PeerExtensions[torrent.Metadata])
 			}
 
 			return

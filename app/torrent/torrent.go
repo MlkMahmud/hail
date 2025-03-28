@@ -259,15 +259,13 @@ func NewTorrent(torrentFileOrMagnetLink string) (*Torrent, error) {
 
 	// Torrents created with from a magnet link will not include metadata for the torrent on creation.
 	// We have to get it from a peer using the metadata extension
-	if torrent.Info.Pieces == nil {
-		torrentInfo, err := torrent.downloadMetadata()
+	torrentInfo, err := torrent.downloadMetadata()
 
-		if err != nil {
-			return nil, err
-		}
-
-		torrent.Info = *torrentInfo
+	if err != nil {
+		return nil, err
 	}
+
+	torrent.Info = *torrentInfo
 
 	return torrent, err
 }

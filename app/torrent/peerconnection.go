@@ -15,10 +15,10 @@ import (
 
 type PeerConnection struct {
 	Conn               net.Conn
-	Extensions         map[Extension]uint8
 	InfoHash           [sha1.Size]byte
 	PeerAddress        string
 	PeerId             string
+	PeerExtensions     map[Extension]uint8
 	SupportsExtensions bool
 }
 
@@ -26,6 +26,8 @@ const (
 	handshakeMessageLen = pstrLen + 49
 	pstr                = "BitTorrent protocol"
 	pstrLen             = len(pstr)
+
+	metadataExtensionId = 1
 )
 
 func NewPeerConnection(peer Peer, infoHash [sha1.Size]byte) *PeerConnection {
@@ -79,7 +81,7 @@ func (p *PeerConnection) completeBaseHandshake() error {
 		return fmt.Errorf("received info hash %v does not match expected info hash %v", receivedInfoHash, p.InfoHash)
 	}
 
-	if reservedBitsIndex, reservedBitsLength := 21, 8; !bytes.Equal(make([]byte, 8), responseBuffer[reservedBitsIndex:reservedBitsIndex+reservedBitsLength]) {
+	if extensionBitsIndex, extensionBitsLength := 21, 8; !bytes.Equal(make([]byte, 8), responseBuffer[extensionBitsIndex:extensionBitsIndex+extensionBitsLength]) {
 		p.SupportsExtensions = true
 	}
 
@@ -148,7 +150,7 @@ func (p *PeerConnection) receiveExtensionHandshakeMessage() error {
 		extensions[ext] = uint8(id)
 	}
 
-	p.Extensions = extensions
+	p.PeerExtensions = extensions
 
 	return nil
 }
@@ -179,19 +181,18 @@ func (p *PeerConnection) receiveMessage(messageId MessageId) (*Message, error) {
 func (p *PeerConnection) receiveMetadataMessage() ([]byte, error) {
 	message, err := p.receiveMessage(ExtensionMessageId)
 
-	
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive metadata message: %w", err)
 	}
-	
+
 	if len(message.Payload) == 0 {
 		return nil, fmt.Errorf("metadata response payload is empty")
 	}
-	
-	if receivedId, expectedId := uint(message.Payload[0]), uint(p.Extensions[Metadata]); expectedId != receivedId {
-		return nil, fmt.Errorf("expected metadata extension Id to be %d, but received %d", expectedId, receivedId)
+
+	if receivedId := int(message.Payload[0]); receivedId != metadataExtensionId {
+		return nil, fmt.Errorf("expected metadata extension Id to be %d, but received %d", metadataExtensionId, receivedId)
 	}
-	
+
 	decoded, nextCharIndex, err := bencode.DecodeValue(message.Payload[1:])
 
 	if err != nil {
@@ -237,7 +238,7 @@ func (p *PeerConnection) receiveMetadataMessage() ([]byte, error) {
 func (p *PeerConnection) sendExtensionHandshakeMessage() error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"m": map[string]any{
-			"ut_metadata": 1,
+			"ut_metadata": metadataExtensionId,
 		},
 	})
 
@@ -300,7 +301,7 @@ func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 	messagePayloadBuffer := make([]byte, extensionMessageIdLength+len(bencodedString))
 
 	index := 0
-	messagePayloadBuffer[index] = byte(p.Extensions[Metadata])
+	messagePayloadBuffer[index] = byte(p.PeerExtensions[Metadata])
 
 	index += 1
 	copy(messagePayloadBuffer[index:], []byte(bencodedString))
