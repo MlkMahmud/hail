@@ -183,16 +183,71 @@ func main() {
 				log.Fatal(err)
 			}
 
+			if _, err := peerConnection.ReceiveMessage(torrent.Bitfield); err != nil {
+				log.Fatal(err)
+			}
+
 			if peerConnection.SupportsExtensions {
-				if _, err := peerConnection.ReceiveMessage(torrent.Bitfield); err != nil {
-					log.Fatal(err)
-				}
 
 				if err := peerConnection.SendExtensionHandshakeMessage(); err != nil {
 					log.Fatal(err)
 				}
 
 				if err := peerConnection.ReceiveExtensionHandshakeMessage(); err != nil {
+					log.Fatal(err)
+				}
+			}
+
+			fmt.Printf("Peer ID: %x\n", handshakeResp[48:])
+			fmt.Printf("Peer Metadata Extension ID: %d\n", peerConnection.Extensions[torrent.Metadata])
+			return
+		}
+
+	case "magnet_info":
+		{
+			magnetLink := os.Args[2]
+
+			trrnt, err := torrent.NewTorrent(magnetLink)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			peers, err := trrnt.GetPeers()
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			peer := peers[0]
+			peerConnection, err := torrent.NewPeerConnection(peer, trrnt.InfoHash)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			defer peerConnection.Conn.Close()
+
+			handshakeResp, err := peerConnection.EstablishHandshake()
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if _, err := peerConnection.ReceiveMessage(torrent.Bitfield); err != nil {
+				log.Fatal(err)
+			}
+
+			if peerConnection.SupportsExtensions {
+				if err := peerConnection.SendExtensionHandshakeMessage(); err != nil {
+					log.Fatal(err)
+				}
+
+				if err := peerConnection.ReceiveExtensionHandshakeMessage(); err != nil {
+					log.Fatal(err)
+				}
+
+				if err := peerConnection.SendMetadataRequestMessage(); err != nil {
 					log.Fatal(err)
 				}
 			}

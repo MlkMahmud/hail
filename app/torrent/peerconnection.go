@@ -179,7 +179,7 @@ func (p *PeerConnection) SendExtensionHandshakeMessage() error {
 		return fmt.Errorf("failed to generate extension handshake payload: %w", err)
 	}
 
-	messagePayloadLength := len(bencodedString) + 1 // one extra byte for the extension message Id (different from the message Id)
+	messagePayloadLength := len(bencodedString) + 1 // one extra byte for the extension message handshake Id (different from the message Id)
 	messagePayloadBuffer := make([]byte, messagePayloadLength)
 
 	index := 0
@@ -216,6 +216,33 @@ func (p *PeerConnection) SendMessage(messageId MessageId, payload []byte) error 
 	if _, err := utils.ConnWriteFull(p.Conn, messageBuffer); err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func (p *PeerConnection) SendMetadataRequestMessage() error {
+	bencodedString, err := bencode.EncodeValue(map[string]any{
+		"msg_type": int(ExtensionRequestMessageId),
+		"piece": 0,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to encode metadata extension request payload %w", err)
+	}
+
+	extensionMessageIdLength := 1
+	messagePayloadBuffer := make([]byte, extensionMessageIdLength + len(bencodedString))
+
+	index := 0
+	messagePayloadBuffer[index] = byte(p.Extensions[Metadata])
+
+	index +=1
+	copy(messagePayloadBuffer[index:], []byte(bencodedString))
+
+	if err := p.SendMessage(ExtensionMessageId, messagePayloadBuffer); err != nil {
+		return fmt.Errorf("failed to send metadata extension request %w", err)
+	}
+
 
 	return nil
 }

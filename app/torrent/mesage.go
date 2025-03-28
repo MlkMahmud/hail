@@ -2,16 +2,23 @@ package torrent
 
 type Extension string
 
-const (
-	Metadata Extension = "ut_metadata"
-)
-
+type ExtensionMessage int
 type Message struct {
 	Id      MessageId
 	Payload []byte
 }
 
 type MessageId int
+
+const (
+	Metadata Extension = "ut_metadata"
+)
+
+const (
+	ExtensionRequestMessageId ExtensionMessage = iota
+	ExtensionDataMessageId
+	ExtensionRejectMessageId
+)
 
 const (
 	Choke MessageId = iota
