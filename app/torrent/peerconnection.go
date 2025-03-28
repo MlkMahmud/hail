@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"time"
@@ -12,6 +13,14 @@ import (
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
 )
+
+type PeerConnection struct {
+	Conn               net.Conn
+	Extensions         map[Extension]uint8
+	InfoHash           [sha1.Size]byte
+	Peer               Peer
+	SupportsExtensions bool
+}
 
 const (
 	handshakeMessageLen = pstrLen + 49
@@ -33,20 +42,7 @@ func NewPeerConnection(peer Peer, infoHash [sha1.Size]byte) (*PeerConnection, er
 	}, nil
 }
 
-func (w *PeerConnection) SupportsExtensions(handshakeResponse []byte) bool {
-	if len(handshakeResponse) != handshakeMessageLen {
-		return false
-	}
-
-	if reservedBitsIndex, reservedBitsLength := 21, 8; bytes.Equal(make([]byte, 8), handshakeResponse[reservedBitsIndex:reservedBitsIndex+reservedBitsLength]) {
-		return false
-	}
-
-	return true
-
-}
-
-func (w *PeerConnection) EstablishHandshake() ([]byte, error) {
+func (p *PeerConnection) EstablishHandshake() ([]byte, error) {
 	peerId := []byte(utils.GenerateRandomString(20, ""))
 	messageBuffer := make([]byte, handshakeMessageLen)
 	messageBuffer[0] = byte(pstrLen)
@@ -59,16 +55,16 @@ func (w *PeerConnection) EstablishHandshake() ([]byte, error) {
 	index += 1
 
 	index += copy(messageBuffer[index:], make([]byte, 2))
-	index += copy(messageBuffer[index:], w.InfoHash[:])
+	index += copy(messageBuffer[index:], p.InfoHash[:])
 	index += copy(messageBuffer[index:], peerId[:])
 
-	if _, err := utils.ConnWriteFull(w.Conn, messageBuffer); err != nil {
+	if _, err := utils.ConnWriteFull(p.Conn, messageBuffer); err != nil {
 		return nil, err
 	}
 
 	responseBuffer := make([]byte, handshakeMessageLen)
 
-	if _, err := utils.ConnReadFull(w.Conn, responseBuffer); err != nil {
+	if _, err := utils.ConnReadFull(p.Conn, responseBuffer); err != nil {
 		return nil, err
 	}
 
@@ -86,24 +82,80 @@ func (w *PeerConnection) EstablishHandshake() ([]byte, error) {
 		return nil, fmt.Errorf("expected protocol string to equal '%s', but got '%s'", pstr, receivedPstr)
 	}
 
-	if receivedInfoHash := responseBuffer[28:48]; !bytes.Equal(receivedInfoHash, w.InfoHash[:]) {
-		return nil, fmt.Errorf("received info hash %v does not match expected info hash %v", receivedInfoHash, w.InfoHash)
+	if receivedInfoHash := responseBuffer[28:48]; !bytes.Equal(receivedInfoHash, p.InfoHash[:]) {
+		return nil, fmt.Errorf("received info hash %v does not match expected info hash %v", receivedInfoHash, p.InfoHash)
+	}
+
+	if reservedBitsIndex, reservedBitsLength := 21, 8; !bytes.Equal(make([]byte, 8), responseBuffer[reservedBitsIndex:reservedBitsIndex+reservedBitsLength]) {
+		p.SupportsExtensions = true
 	}
 
 	return responseBuffer, nil
 }
 
-func (w *PeerConnection) ReceiveMessage(messageId MessageId) (*Message, error) {
+func (p *PeerConnection) ReceiveExtensionHandshakeMessage() error {
+	message, err := p.ReceiveMessage(ExtensionMessageId)
+
+	if err != nil {
+		return fmt.Errorf("failed to receive extension handshake message %w", err)
+	}
+
+	// Ignore the first byte of the payload which contains the extension message ID.
+	decodedPayload, _, err := bencode.DecodeValue(message.Payload[1:])
+
+	if err != nil {
+		return fmt.Errorf("failed to decode extension handshake message payload %w", err)
+	}
+
+	dict, ok := decodedPayload.(map[string]any)
+
+	if !ok {
+		return fmt.Errorf("expected decoded payload to be a dictionary, but received %v", dict)
+	}
+
+	extensionsMap, ok := dict["m"].(map[string]any)
+	extensions := make(map[Extension]uint8)
+
+	if !ok {
+		return fmt.Errorf("expected decoded payload to include an \"m\" key which maps to a dictionary of supported extensions, but got %v", extensionsMap)
+	}
+
+	for _, ext := range []Extension{Metadata} {
+		value, ok := extensionsMap[string(ext)]
+
+		if !ok {
+			continue
+		}
+
+		id, ok := value.(int)
+
+		if !ok {
+			return fmt.Errorf("expected extension Id to be an integer, but received %v", id)
+		}
+
+		if id < 0 || id > math.MaxUint8 {
+			return fmt.Errorf("expected extension Id to be an integer between '0 - 255', but received %v", id)
+		}
+
+		extensions[ext] = uint8(id)
+	}
+
+	p.Extensions = extensions
+
+	return nil
+}
+
+func (p *PeerConnection) ReceiveMessage(messageId MessageId) (*Message, error) {
 	messageLengthBuffer := make([]byte, 4)
 
-	if _, err := utils.ConnReadFull(w.Conn, messageLengthBuffer); err != nil {
+	if _, err := utils.ConnReadFull(p.Conn, messageLengthBuffer); err != nil {
 		return nil, err
 	}
 
 	messageLength := binary.BigEndian.Uint32(messageLengthBuffer)
 	messageBuffer := make([]byte, messageLength)
 
-	if _, err := utils.ConnReadFull(w.Conn, messageBuffer); err != nil {
+	if _, err := utils.ConnReadFull(p.Conn, messageBuffer); err != nil {
 		return nil, err
 	}
 
@@ -116,7 +168,7 @@ func (w *PeerConnection) ReceiveMessage(messageId MessageId) (*Message, error) {
 	return &Message{Id: receivedMessageId, Payload: messageBuffer[1:]}, nil
 }
 
-func (w *PeerConnection) SendExtensionHandshake() error {
+func (p *PeerConnection) SendExtensionHandshakeMessage() error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"m": map[string]any{
 			"ut_metadata": 1,
@@ -127,31 +179,24 @@ func (w *PeerConnection) SendExtensionHandshake() error {
 		return fmt.Errorf("failed to generate extension handshake payload: %w", err)
 	}
 
-	messageIdLength := 1
 	messagePayloadLength := len(bencodedString) + 1 // one extra byte for the extension message Id (different from the message Id)
-	messagePrefixLength := 4
+	messagePayloadBuffer := make([]byte, messagePayloadLength)
 
-	messageBuffer := make([]byte, messageIdLength+messagePayloadLength+messagePrefixLength)
-	binary.BigEndian.PutUint32(messageBuffer, uint32(messageIdLength+messagePayloadLength))
+	index := 0
 
-	index := 4
-	// message Id for an extension Id is 20
-	messageBuffer[index] = byte(Extension)
+	messagePayloadBuffer[index] = byte(0) // write the extension message Id (0)
 	index += 1
 
-	messageBuffer[index] = byte(0) // write the extension message Id (0)
-	index += 1
+	copy(messagePayloadBuffer[index:], []byte(bencodedString))
 
-	copy(messageBuffer[index:], []byte(bencodedString))
-
-	if _, err := utils.ConnWriteFull(w.Conn, messageBuffer); err != nil {
+	if err := p.SendMessage(ExtensionMessageId, messagePayloadBuffer); err != nil {
 		return fmt.Errorf("failed to send extension handshake message: %w", err)
 	}
 
 	return nil
 }
 
-func (w *PeerConnection) SendMessage(messageId MessageId, payload []byte) error {
+func (p *PeerConnection) SendMessage(messageId MessageId, payload []byte) error {
 	messageIdLen := 1
 	messagePrefixLen := 4
 	payloadLen := 0
@@ -168,7 +213,7 @@ func (w *PeerConnection) SendMessage(messageId MessageId, payload []byte) error 
 	messageBuffer[index] = byte(messageId)
 	copy(messageBuffer[index+1:], payload)
 
-	if _, err := utils.ConnWriteFull(w.Conn, messageBuffer); err != nil {
+	if _, err := utils.ConnWriteFull(p.Conn, messageBuffer); err != nil {
 		return err
 	}
 

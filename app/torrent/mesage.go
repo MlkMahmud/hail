@@ -1,8 +1,9 @@
 package torrent
 
-import (
-	"crypto/sha1"
-	"net"
+type Extension string
+
+const (
+	Metadata Extension = "ut_metadata"
 )
 
 type Message struct {
@@ -11,12 +12,6 @@ type Message struct {
 }
 
 type MessageId int
-
-type PeerConnection struct {
-	Conn     net.Conn
-	InfoHash [sha1.Size]byte
-	Peer     Peer
-}
 
 const (
 	Choke MessageId = iota
@@ -28,5 +23,5 @@ const (
 	Request
 	PieceMessageId
 	Cancel
-	Extension = 20
+	ExtensionMessageId = 20
 )
