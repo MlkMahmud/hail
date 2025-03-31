@@ -29,8 +29,8 @@ type PeerConnection struct {
 }
 
 type PeerConnectionConfig struct {
-	InfoHash             [sha1.Size]byte
-	Peer                 Peer
+	InfoHash [sha1.Size]byte
+	Peer     Peer
 }
 
 type ReadWriteMutex struct {
@@ -482,7 +482,8 @@ func (p *PeerConnection) InitConnection() error {
 
 	// todo: handle bitfield response
 	if _, err := p.receiveMessage(Bitfield); err != nil {
-		return err
+		fmt.Printf("failed to receive 'Bitfield' message from peer: %v", err)
+		return nil	
 	}
 
 	if !p.SupportsExtensions {
