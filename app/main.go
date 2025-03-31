@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/client"
@@ -75,7 +73,13 @@ func main() {
 				log.Fatal(err)
 			}
 
-			downloadedPiece, err := client.DownloadPiece(trrnt.Info.Pieces[pieceIndex], peers[0], trrnt.InfoHash)
+			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: trrnt.InfoHash, Peer: peers[0]})
+
+			if err := peerConnection.InitConnection(); err != nil {
+				log.Fatal(err)
+			}
+
+			downloadedPiece, err := peerConnection.DownloadPiece(trrnt.Info.Pieces[pieceIndex])
 
 			if err != nil {
 				log.Fatal(err)
@@ -114,21 +118,13 @@ func main() {
 			port := uint16(portNum)
 			peer := torrent.Peer{IpAddress: host, Port: port}
 
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))), 3*time.Second)
+			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: trrnt.InfoHash, Peer: peer})
 
-			if err != nil {
+			if err := peerConnection.InitConnection(); err != nil {
 				log.Fatal(err)
 			}
 
-			defer conn.Close()
-
-			handshakeResp, err := client.EstablishHandshake(conn, trrnt.InfoHash)
-
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			fmt.Printf("Peer ID: %x\n", handshakeResp[48:])
+			fmt.Printf("Peer ID: %x\n", peerConnection.PeerId)
 		}
 
 	case "info":
@@ -152,6 +148,51 @@ func main() {
 			return
 		}
 
+	case "magnet_download_piece":
+		{
+			dest := os.Args[3]
+			torrentFilePath := os.Args[4]
+			pieceIndex, err := strconv.Atoi(os.Args[5])
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			trrnt, err := torrent.NewTorrent(torrentFilePath)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			peers, err := trrnt.GetPeers()
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if err := trrnt.DownloadMetadata(); err != nil {
+				log.Fatal(err)
+			}
+
+			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: trrnt.InfoHash, Peer: peers[0]})
+
+			if err := peerConnection.InitConnection(); err != nil {
+				log.Fatal(err)
+			}
+
+			downloadedPiece, err := peerConnection.DownloadPiece(trrnt.Info.Pieces[pieceIndex])
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if err := os.WriteFile(dest, downloadedPiece.Data, 0644); err != nil {
+				log.Fatal(err)
+			}
+
+			return
+		}
+
 	case "magnet_handshake":
 		{
 			magnetLink := os.Args[2]
@@ -168,10 +209,8 @@ func main() {
 				log.Fatal(err)
 			}
 
-			peer := peers[0]
-			peerConnection := torrent.NewPeerConnection(peer, trrnt.InfoHash)
-
-			initErr := peerConnection.InitPeerConnection()
+			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: trrnt.InfoHash, Peer: peers[0]})
+			initErr := peerConnection.InitConnection()
 
 			if peerConnection.Conn != nil {
 				defer peerConnection.Conn.Close()

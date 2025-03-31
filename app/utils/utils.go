@@ -86,7 +86,7 @@ func GenerateRandomString(length int, charset string) string {
 	return string(byteArr)
 }
 
-func MergeDirectoryToFile(dir string, dest string) error {
+func MergeSortedDirectoryToFile(dir string, dest string) error {
 	destFile, err := os.OpenFile(dest, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 
 	if err != nil {

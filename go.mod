@@ -10,4 +10,7 @@ module github.com/codecrafters-io/bittorrent-starter-go
 
 go 1.24
 
-require github.com/mitchellh/mapstructure v1.5.0
+require (
+	github.com/mitchellh/mapstructure v1.5.0
+	golang.org/x/sync v0.12.0
+)

@@ -1,326 +1,39 @@
 package client
 
 import (
-	"bytes"
-	"crypto/sha1"
-	"encoding/binary"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
-	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
 )
 
-type DownloadedPiece struct {
-	Data  []byte
-	Err   error
-	Piece torrent.Piece
-}
-
-type Message struct {
-	Id      MessageId
-	Payload []byte
-}
-
-type MessageId int
-type ReadWriteMutex struct {
-	reader sync.Mutex
-	writer sync.Mutex
-}
-
-type RequestMessageResult struct {
-	block torrent.Block
-	err   error
-}
-
-const (
-	Choke MessageId = iota
-	Unchoke
-	Interested
-	NotInterested
-	Have
-	Bitfield
-	Request
-	PieceMessageId
-	Cancel
-)
-
-const (
-	handshakeMessageLen = pstrLen + 49
-	pstr                = "BitTorrent protocol"
-	pstrLen             = len(pstr)
-)
-
-func (d *DownloadedPiece) checkHashIntegrity() error {
-	downloadedPieceHash := sha1.Sum(d.Data)
-
-	if bytes.Equal(downloadedPieceHash[:], d.Piece.Hash[:]) {
-		return nil
-	}
-
-	return fmt.Errorf("hash '%x' for downloaded piece at index '%d' does not match expected '%x'", downloadedPieceHash, d.Piece.Index, d.Piece.Hash)
-}
-
-func downloadBlock(conn net.Conn, block torrent.Block, resultQueue chan<- RequestMessageResult, mutex *ReadWriteMutex) {
-	payload := generateBlockRequestPayload(block)
-
-	mutex.writer.Lock()
-	err := sendMessage(conn, Request, payload)
-	mutex.writer.Unlock()
+func Download(src string, dest string) error {
+	trrnt, err := torrent.NewTorrent(src)
 
 	if err != nil {
-		resultQueue <- RequestMessageResult{err: err}
-		return
-	}
-
-	mutex.reader.Lock()
-	message, err := receiveMessage(conn, PieceMessageId)
-	mutex.reader.Unlock()
-
-	if err != nil {
-		resultQueue <- RequestMessageResult{err: err}
-		return
-	}
-
-	index := 0
-
-	blockPieceIndex := binary.BigEndian.Uint32(message.Payload[index:])
-	index += 4
-
-	blockPieceOffset := binary.BigEndian.Uint32(message.Payload[index:])
-	index += 4
-
-	blockData := message.Payload[index:]
-
-	resultQueue <- RequestMessageResult{
-		block: torrent.Block{
-			Begin:     int(blockPieceOffset),
-			Data:      blockData,
-			Length:    len(blockData),
-			PiceIndex: int(blockPieceIndex),
-		},
-	}
-
-	return
-}
-
-func generateBlockRequestPayload(block torrent.Block) []byte {
-	blockBeginSize := 4
-	blockIndexSize := 4
-	blockLengthSize := 4
-	messageBufferSize := blockBeginSize + blockIndexSize + blockLengthSize
-
-	messageBuffer := make([]byte, messageBufferSize)
-
-	index := 0
-
-	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.PiceIndex))
-	index += blockIndexSize
-
-	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.Begin))
-	index += blockBeginSize
-
-	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.Length))
-	index += blockLengthSize
-
-	return messageBuffer
-}
-
-func sendMessage(conn net.Conn, messageId MessageId, payload []byte) error {
-	messageIdLen := 1
-	messagePrefixLen := 4
-	payloadLen := 0
-
-	if payload != nil {
-		payloadLen = len(payload)
-	}
-
-	messageBufferLen := messagePrefixLen + messageIdLen + payloadLen
-	messageBuffer := make([]byte, messageBufferLen)
-	binary.BigEndian.PutUint32(messageBuffer, uint32(messageIdLen+payloadLen))
-
-	index := 4
-	messageBuffer[index] = byte(messageId)
-	copy(messageBuffer[index+1:], payload)
-
-	if _, err := utils.ConnWriteFull(conn, messageBuffer); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func verifyHandshakeResponse(response []byte, expectedInfoHash [sha1.Size]byte) error {
-	responseLen := len(response)
-
-	if responseLen != handshakeMessageLen {
-		return fmt.Errorf("expected response message length to be '%d' long, but got '%d'", handshakeMessageLen, responseLen)
-	}
-
-	if receivedPstrLen := response[0]; receivedPstrLen != byte(pstrLen) {
-		return fmt.Errorf("expected protocol string length to be '%d', but got '%v'", pstrLen, receivedPstrLen)
-	}
-
-	if receivedPstr := response[1 : pstrLen+1]; string(receivedPstr) != pstr {
-		return fmt.Errorf("expected protocol string to equal '%s', but got '%s'", pstr, receivedPstr)
-	}
-
-	if receivedInfoHash := response[28:48]; !bytes.Equal(receivedInfoHash, expectedInfoHash[:]) {
-		return fmt.Errorf("received info hash %v does not match expected info hash %v", receivedInfoHash, expectedInfoHash)
-	}
-
-	return nil
-}
-
-func receiveMessage(conn net.Conn, messageId MessageId) (*Message, error) {
-	messageLenBuffer := make([]byte, 4)
-
-	if _, err := utils.ConnReadFull(conn, messageLenBuffer); err != nil {
-		return nil, err
-	}
-
-	messageLen := binary.BigEndian.Uint32(messageLenBuffer)
-	messageBuffer := make([]byte, messageLen)
-
-	if _, err := utils.ConnReadFull(conn, messageBuffer); err != nil {
-		return nil, err
-	}
-
-	receivedMessageId := MessageId(messageBuffer[0])
-
-	if receivedMessageId != messageId {
-		return nil, fmt.Errorf("expected received peer message Id to be %d, but got %d", messageId, receivedMessageId)
-	}
-
-	return &Message{Id: receivedMessageId, Payload: messageBuffer[1:]}, nil
-}
-
-func EstablishHandshake(conn net.Conn, infoHash [sha1.Size]byte) ([]byte, error) {
-	peerId := []byte(utils.GenerateRandomString(20, ""))
-	messageBuffer := make([]byte, handshakeMessageLen)
-	messageBuffer[0] = byte(pstrLen)
-
-	index := 1
-	index += copy(messageBuffer[index:], []byte(pstr))
-	index += copy(messageBuffer[index:], make([]byte, 5))
-
-	messageBuffer[index] = byte(16)
-	index += 1
-
-	index += copy(messageBuffer[index:], make([]byte, 2))
-	index += copy(messageBuffer[index:], infoHash[:])
-	index += copy(messageBuffer[index:], peerId[:])
-
-	if _, err := utils.ConnWriteFull(conn, messageBuffer); err != nil {
-		return nil, err
-	}
-
-	responseBuffer := make([]byte, handshakeMessageLen)
-
-	if _, err := utils.ConnReadFull(conn, responseBuffer); err != nil {
-		return nil, err
-	}
-
-	if err := verifyHandshakeResponse(responseBuffer, infoHash); err != nil {
-		return nil, err
-	}
-
-	return responseBuffer, nil
-}
-
-func DownloadPiece(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]byte) (*DownloadedPiece, error) {
-	timeout := 3 * time.Second
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(peer.IpAddress, strconv.Itoa(int(peer.Port))), timeout)
-
-	if err != nil {
-		return nil, err
-	}
-
-	defer conn.Close()
-
-	if _, err := EstablishHandshake(conn, infoHash); err != nil {
-		return nil, err
-	}
-
-	if _, err := receiveMessage(conn, Bitfield); err != nil {
-		return nil, err
-	}
-
-	if err := sendMessage(conn, Interested, nil); err != nil {
-		return nil, err
-	}
-
-	if _, err := receiveMessage(conn, Unchoke); err != nil {
-		return nil, err
-	}
-
-	blocks := piece.GetBlocks()
-	numOfBlocks := len(blocks)
-	numOfBlocksDownloaded := 0
-
-	downloadedBlocks := make([]torrent.Block, numOfBlocks)
-	mutex := ReadWriteMutex{}
-	requestBatchSize := 3
-	resultsQueue := make(chan RequestMessageResult, requestBatchSize)
-
-	for numOfBlocksDownloaded < numOfBlocks {
-		pendingBlocks := blocks[numOfBlocksDownloaded:]
-		numOfPendingBlocks := len(pendingBlocks)
-
-		currentBatchSize := min(numOfPendingBlocks, requestBatchSize)
-
-		for i := 0; i < currentBatchSize; i++ {
-			go downloadBlock(conn, pendingBlocks[i], resultsQueue, &mutex)
-		}
-
-		for i := 0; i < currentBatchSize; i++ {
-			requestResult := <-resultsQueue
-
-			if requestResult.err != nil {
-				return nil, err
-			}
-
-			downloadedBlock := requestResult.block
-			downloadedBlockIndex := int(downloadedBlock.Begin / torrent.BlockSize)
-
-			if downloadedBlockIndex >= numOfBlocks {
-				return nil, fmt.Errorf("downloaded block offset %d is invalid", downloadedBlock.Begin)
-			}
-
-			downloadedBlocks[downloadedBlockIndex] = downloadedBlock
-			numOfBlocksDownloaded += 1
-		}
-	}
-
-	return &DownloadedPiece{
-		Data:  piece.AssembleBlocks(downloadedBlocks),
-		Piece: piece,
-	}, nil
-}
-
-func Download(torrentFile string, dest string) error {
-	trrnt, err := torrent.NewTorrent(torrentFile)
-
-	if err != nil {
-		return err
+		return fmt.Errorf("failed to download torrent: %w", err)
 	}
 
 	peers, err := trrnt.GetPeers()
 
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to download torrent: %w", err)
 	}
 
-	numOfPiecesDownloaded := 0
-	numOfPiecesToDownload := len(trrnt.Info.Pieces)
+	var metadataRequestErr error
 
-	requestBatchSize := len(peers)
-	downloadedPieces := make(chan DownloadedPiece, requestBatchSize)
+	if trrnt.Info.Pieces == nil {
+		metadataRequestErr = trrnt.DownloadMetadata()
+	}
+
+	if metadataRequestErr != nil {
+		return fmt.Errorf("failed to download torrent: %w", err)
+	}
 
 	tempDir, err := os.MkdirTemp("", trrnt.Info.Name)
 
@@ -330,49 +43,77 @@ func Download(torrentFile string, dest string) error {
 
 	defer os.RemoveAll(tempDir)
 
-	for numOfPiecesDownloaded < numOfPiecesToDownload {
-		pendingPieces := trrnt.Info.Pieces[numOfPiecesDownloaded:]
-		numOfPendingPieces := len(pendingPieces)
-		currentBatchSize := min(requestBatchSize, numOfPendingPieces)
+	numOfPeers := len(peers)
+	numOfPiecesProcessed := 0
+	numOfPiecesToDownload := len(trrnt.Info.Pieces)
 
-		for i := 0; i < currentBatchSize; i++ {
-			go func(piece torrent.Piece, peer torrent.Peer, infoHash [sha1.Size]byte) {
-				downloadedPiece, err := DownloadPiece(piece, peer, infoHash)
+	downloadedPieces := make(chan torrent.DownloadedPiece, numOfPiecesToDownload)
+	piecesTodownload := make(chan torrent.Piece, numOfPiecesToDownload)
 
-				if err != nil {
-					downloadedPieces <- DownloadedPiece{Err: err}
-					return
+	g := new(errgroup.Group)
+	var mutex sync.Mutex
+
+	for i := 0; i < numOfPiecesToDownload; i++ {
+		piecesTodownload <- trrnt.Info.Pieces[i]
+
+		if i < numOfPeers {
+			go func() {
+				peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{DoExtensionHandshake: true, InfoHash: trrnt.InfoHash, Peer: peers[i]})
+
+				for piece := range piecesTodownload {
+					downloadedPiece, err := peerConnection.DownloadPiece(piece)
+
+					if err != nil {
+						fmt.Print(err)
+						piecesTodownload <- piece
+					}
+
+					if err := downloadedPiece.CheckHashIntegrity(); err != nil {
+						fmt.Print(err)
+						piecesTodownload <- piece
+					}
+
+					downloadedPieces <- *downloadedPiece
 				}
-
-				if err := downloadedPiece.checkHashIntegrity(); err != nil {
-					downloadedPieces <- DownloadedPiece{Err: err}
-					return
-				}
-
-				downloadedPieces <- *downloadedPiece
-				return
-			}(pendingPieces[i], peers[i], trrnt.InfoHash)
+			}()
 		}
 
-		for i := 0; i < currentBatchSize; i++ {
-			downloadedPiece := <-downloadedPieces
+		if i < numOfPiecesToDownload/2 {
+			g.Go(func() error {
+				mutex.Lock()
 
-			if downloadedPiece.Err != nil {
-				return err
-			}
+				if numOfPiecesProcessed == numOfPiecesToDownload {
+					mutex.Unlock()
+					close(piecesTodownload)
+					close(downloadedPieces)
+					return nil
+				}
 
-			file := filepath.Join(tempDir, fmt.Sprintf("%02d.piece", downloadedPiece.Piece.Index))
+				for downloadedPiece := range downloadedPieces {
+					file := filepath.Join(tempDir, fmt.Sprintf("%020d.piece", downloadedPiece.Piece.Index))
 
-			if err := os.WriteFile(file, downloadedPiece.Data, 0666); err != nil {
-				return err
-			}
+					err := os.WriteFile(file, downloadedPiece.Data, 0666)
 
-			numOfPiecesDownloaded += 1
+					mutex.Lock()
+					numOfPiecesProcessed += 1
+					mutex.Unlock()
+
+					if err != nil {
+						return err
+					}
+				}
+
+				return nil
+			})
 		}
 	}
 
-	if err := utils.MergeDirectoryToFile(tempDir, dest); err != nil {
-		return err
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("failed to download torrent: %w", err)
+	}
+
+	if err := utils.MergeSortedDirectoryToFile(tempDir, dest); err != nil {
+		return fmt.Errorf("failed to download torrent: %w", err)
 	}
 
 	return nil

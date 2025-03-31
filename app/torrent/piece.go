@@ -1,6 +1,7 @@
 package torrent
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"fmt"
 )
@@ -10,6 +11,12 @@ type Block struct {
 	Data      []byte
 	Length    int
 	PiceIndex int
+}
+
+type DownloadedPiece struct {
+	Data  []byte
+	Err   error
+	Piece Piece
 }
 
 type Piece struct {
@@ -78,7 +85,7 @@ func parseTorrentPieces(infoDict map[string]any) ([]Piece, error) {
 	return piecesArr, nil
 }
 
-func (p *Piece) AssembleBlocks(blocks []Block) []byte {
+func (p *Piece) assembleBlocks(blocks []Block) []byte {
 	buffer := make([]byte, p.Length)
 
 	for _, block := range blocks {
@@ -86,6 +93,16 @@ func (p *Piece) AssembleBlocks(blocks []Block) []byte {
 	}
 
 	return buffer
+}
+
+func (d *DownloadedPiece) CheckHashIntegrity() error {
+	downloadedPieceHash := sha1.Sum(d.Data)
+
+	if bytes.Equal(downloadedPieceHash[:], d.Piece.Hash[:]) {
+		return nil
+	}
+
+	return fmt.Errorf("hash '%x' for downloaded piece at index '%d' does not match expected '%x'", downloadedPieceHash, d.Piece.Index, d.Piece.Hash)
 }
 
 func (p *Piece) GetBlocks() []Block {

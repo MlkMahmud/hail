@@ -7,11 +7,17 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
 )
+
+type BlockRequestResult struct {
+	block Block
+	err   error
+}
 
 type PeerConnection struct {
 	Conn               net.Conn
@@ -22,6 +28,17 @@ type PeerConnection struct {
 	SupportsExtensions bool
 }
 
+type PeerConnectionConfig struct {
+	DoExtensionHandshake bool
+	InfoHash             [sha1.Size]byte
+	Peer                 Peer
+}
+
+type ReadWriteMutex struct {
+	writer sync.Mutex
+	reader sync.Mutex
+}
+
 const (
 	handshakeMessageLen = pstrLen + 49
 	pstr                = "BitTorrent protocol"
@@ -30,11 +47,33 @@ const (
 	metadataExtensionId = 1
 )
 
-func NewPeerConnection(peer Peer, infoHash [sha1.Size]byte) *PeerConnection {
+func NewPeerConnection(config PeerConnectionConfig) *PeerConnection {
 	return &PeerConnection{
-		InfoHash:    infoHash,
-		PeerAddress: fmt.Sprintf("%s:%d", peer.IpAddress, peer.Port),
+		InfoHash:    config.InfoHash,
+		PeerAddress: fmt.Sprintf("%s:%d", config.Peer.IpAddress, config.Peer.Port),
 	}
+}
+
+func generateBlockRequestPayload(block Block) []byte {
+	blockBeginSize := 4
+	blockIndexSize := 4
+	blockLengthSize := 4
+	messageBufferSize := blockBeginSize + blockIndexSize + blockLengthSize
+
+	messageBuffer := make([]byte, messageBufferSize)
+
+	index := 0
+
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.PiceIndex))
+	index += blockIndexSize
+
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.Begin))
+	index += blockBeginSize
+
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.Length))
+	index += blockLengthSize
+
+	return messageBuffer
 }
 
 func (p *PeerConnection) completeBaseHandshake() error {
@@ -81,7 +120,8 @@ func (p *PeerConnection) completeBaseHandshake() error {
 		return fmt.Errorf("received info hash %v does not match expected info hash %v", receivedInfoHash, p.InfoHash)
 	}
 
-	if extensionBitsIndex, extensionBitsLength := 21, 8; !bytes.Equal(make([]byte, 8), responseBuffer[extensionBitsIndex:extensionBitsIndex+extensionBitsLength]) {
+	//The bit selected for the extension protocol is bit 20 from the right (counting starts at 0). So (reserved_byte[5] & 0x10) is the expression to use for checking if the client supports extended messaging.
+	if reservedByteIndex := 24; bytes.Equal(responseBuffer[reservedByteIndex:reservedByteIndex+1], []byte{byte(0x10)}) {
 		p.SupportsExtensions = true
 	}
 
@@ -101,6 +141,59 @@ func (p *PeerConnection) completeExtensionHandshake() error {
 	}
 
 	return nil
+}
+
+func (p *PeerConnection) downloadBlock(block Block, resultsQueue chan<- BlockRequestResult, mutex *ReadWriteMutex) {
+	retries := 3
+
+	var downloadedBlock Block
+	var mainError error
+
+	for i := 0; i < retries; i++ {
+		payload := generateBlockRequestPayload(block)
+
+		mutex.writer.Lock()
+		err := p.sendMessage(Request, payload)
+		mutex.writer.Unlock()
+
+		if err != nil {
+			mainError = fmt.Errorf("failed to download block: %w", err)
+			continue
+		}
+
+		mutex.reader.Lock()
+		message, err := p.receiveMessage(PieceMessageId)
+		mutex.reader.Unlock()
+
+		if err != nil {
+			mainError = fmt.Errorf("failed to download block: %w", err)
+			continue
+		}
+
+		index := 0
+
+		blockPieceIndex := binary.BigEndian.Uint32(message.Payload[index:])
+		index += 4
+
+		blockPieceOffset := binary.BigEndian.Uint32(message.Payload[index:])
+		index += 4
+
+		blockData := message.Payload[index:]
+
+		downloadedBlock = Block{
+			Begin:     int(blockPieceOffset),
+			Data:      blockData,
+			Length:    len(blockData),
+			PiceIndex: int(blockPieceIndex),
+		}
+
+		break
+	}
+
+	resultsQueue <- BlockRequestResult{
+		block: downloadedBlock,
+		err:   mainError,
+	}
 }
 
 func (p *PeerConnection) receiveExtensionHandshakeMessage() error {
@@ -313,7 +406,69 @@ func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 	return nil
 }
 
-func (p *PeerConnection) InitPeerConnection() error {
+func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
+	if err := p.InitConnection(); err != nil {
+		return nil, fmt.Errorf("failed to initialize peer connection: %w", err)
+	}
+
+	if err := p.sendMessage(Interested, nil); err != nil {
+		return nil, fmt.Errorf("failed to donwload block. encountered an error while sending 'Interested' peer message: %w", err)
+	}
+
+	if _, err := p.receiveMessage(Unchoke); err != nil {
+		return nil, fmt.Errorf("failed to donwload block. encountered an error while waiting for 'Unchoke' peer message: %w", err)
+	}
+
+	// todo: add a check to see if the remote peer for this connection has the piece we want to download
+	blocks := piece.GetBlocks()
+	numOfBlocks := len(blocks)
+	numOfBlocksDownloaded := 0
+
+	downloadedBlocks := make([]Block, numOfBlocks)
+	maxBatchSize := 3
+	mutex := ReadWriteMutex{}
+	resultsQueue := make(chan BlockRequestResult)
+
+	for numOfBlocksDownloaded < numOfBlocks {
+		pendingBlocks := blocks[numOfBlocksDownloaded:]
+		numOfPendingBlocks := len(pendingBlocks)
+		currentBatchSize := min(numOfPendingBlocks, maxBatchSize)
+
+		for i := 0; i < currentBatchSize; i++ {
+			go p.downloadBlock(pendingBlocks[i], resultsQueue, &mutex)
+		}
+
+		for i := 0; i < currentBatchSize; i++ {
+			result := <-resultsQueue
+
+			if result.err != nil {
+				return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.Index, result.err)
+			}
+
+			downloadedBlock := result.block
+			downloadedBlockIndex := downloadedBlock.Begin / BlockSize
+
+			if downloadedBlockIndex >= numOfBlocks {
+				return nil, fmt.Errorf("downloaded block offset %d is invalid", downloadedBlock.Begin)
+			}
+
+			downloadedBlocks[downloadedBlockIndex] = downloadedBlock
+			numOfBlocksDownloaded += 1
+		}
+
+	}
+
+	return &DownloadedPiece{
+		Data:  piece.assembleBlocks(downloadedBlocks),
+		Piece: piece,
+	}, nil
+}
+
+func (p *PeerConnection) InitConnection() error {
+	if p.Conn != nil {
+		return nil
+	}
+
 	conn, err := net.DialTimeout("tcp", p.PeerAddress, 5*time.Second)
 
 	if err != nil {

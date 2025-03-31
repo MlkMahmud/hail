@@ -176,9 +176,9 @@ func (t *Torrent) DownloadMetadata() error {
 	}
 
 	for i := 0; i < numOfPeers && !hasDownloadedAllPieces; i++ {
-		peerConnection := NewPeerConnection(peers[i], t.InfoHash)
+		peerConnection := NewPeerConnection(PeerConnectionConfig{InfoHash: t.InfoHash, Peer: peers[i]})
 
-		err := peerConnection.InitPeerConnection()
+		err := peerConnection.InitConnection()
 
 		if peerConnection.Conn != nil {
 			defer peerConnection.Conn.Close()
