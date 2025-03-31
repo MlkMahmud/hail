@@ -175,7 +175,7 @@ func (t *Torrent) DownloadMetadata() error {
 		return nil
 	}
 
-	for i := 0; i < numOfPeers && hasDownloadedAllPieces != true; i++ {
+	for i := 0; i < numOfPeers && !hasDownloadedAllPieces; i++ {
 		peerConnection := NewPeerConnection(peers[i], t.InfoHash)
 
 		err := peerConnection.InitPeerConnection()
@@ -206,7 +206,7 @@ func (t *Torrent) DownloadMetadata() error {
 		}
 	}
 
-	if !hasDownloadedAllPieces || len(metadataBuffer) == 0 {
+	if !hasDownloadedAllPieces {
 		return fmt.Errorf("failed to download torrent metadata from %d peers", len(peers))
 	}
 
@@ -293,8 +293,7 @@ func (t *Torrent) GetPeers() ([]Peer, error) {
 		return nil, err
 	}
 
-	client := http.Client{}
-	res, err := client.Do(req)
+	res, err := http.DefaultClient.Do(req)
 
 	if err != nil {
 		return nil, err
