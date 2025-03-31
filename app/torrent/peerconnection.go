@@ -121,7 +121,7 @@ func (p *PeerConnection) completeBaseHandshake() error {
 	}
 
 	//The bit selected for the extension protocol is bit 20 from the right (counting starts at 0). So (reserved_byte[5] & 0x10) is the expression to use for checking if the client supports extended messaging.
-	if reservedByteIndex := 24; bytes.Equal(responseBuffer[reservedByteIndex:reservedByteIndex+1], []byte{byte(0x10)}) {
+	if reservedByteIndex := 25; bytes.Equal(responseBuffer[reservedByteIndex:reservedByteIndex+1], []byte{byte(0x10)}) {
 		p.SupportsExtensions = true
 	}
 
