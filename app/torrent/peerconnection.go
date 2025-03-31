@@ -29,7 +29,6 @@ type PeerConnection struct {
 }
 
 type PeerConnectionConfig struct {
-	DoExtensionHandshake bool
 	InfoHash             [sha1.Size]byte
 	Peer                 Peer
 }
@@ -412,11 +411,11 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 	}
 
 	if err := p.sendMessage(Interested, nil); err != nil {
-		return nil, fmt.Errorf("failed to donwload block. encountered an error while sending 'Interested' peer message: %w", err)
+		return nil, fmt.Errorf("failed to dowmload block. encountered an error while sending 'Interested' peer message: %w", err)
 	}
 
 	if _, err := p.receiveMessage(Unchoke); err != nil {
-		return nil, fmt.Errorf("failed to donwload block. encountered an error while waiting for 'Unchoke' peer message: %w", err)
+		return nil, fmt.Errorf("failed to download block. encountered an error while waiting for 'Unchoke' peer message: %w", err)
 	}
 
 	// todo: add a check to see if the remote peer for this connection has the piece we want to download
