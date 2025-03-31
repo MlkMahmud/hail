@@ -148,6 +148,18 @@ func main() {
 			return
 		}
 
+	case "magnet_download":
+		{
+			dest := os.Args[3]
+			torrentFilePath := os.Args[4]
+
+			if err := client.Download(torrentFilePath, dest); err != nil {
+				log.Fatal(err)
+			}
+
+			return
+		}
+
 	case "magnet_download_piece":
 		{
 			dest := os.Args[3]
