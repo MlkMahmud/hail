@@ -21,6 +21,7 @@ type BlockRequestResult struct {
 
 type PeerConnection struct {
 	Conn               net.Conn
+	FailedAttempts     int
 	InfoHash           [sha1.Size]byte
 	PeerAddress        string
 	PeerId             string
@@ -44,6 +45,10 @@ const (
 	pstrLen             = len(pstr)
 
 	metadataExtensionId = 1
+)
+
+const (
+	MaxFailedAttempts = 2
 )
 
 func NewPeerConnection(config PeerConnectionConfig) *PeerConnection {
@@ -143,7 +148,7 @@ func (p *PeerConnection) completeExtensionHandshake() error {
 }
 
 func (p *PeerConnection) downloadBlock(block Block, resultsQueue chan<- BlockRequestResult, mutex *ReadWriteMutex) {
-	retries := 3
+	retries := 2
 
 	var downloadedBlock Block
 	var mainError error
@@ -406,16 +411,27 @@ func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 }
 
 func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
+	exitCode := 0
+
+	defer func() {
+		if exitCode != 0 && p.Conn != nil {
+			p.Conn = nil
+		}
+	}()
+
 	if err := p.InitConnection(); err != nil {
+		exitCode = 1
 		return nil, fmt.Errorf("failed to initialize peer connection: %w", err)
 	}
 
 	if err := p.sendMessage(Interested, nil); err != nil {
-		return nil, fmt.Errorf("failed to dowmload block. encountered an error while sending 'Interested' peer message: %w", err)
+		exitCode = 1
+		return nil, fmt.Errorf("failed to dowmload piece %d. encountered an error while sending 'Interested' peer message: %w", piece.Index, err)
 	}
 
 	if _, err := p.receiveMessage(Unchoke); err != nil {
-		return nil, fmt.Errorf("failed to download block. encountered an error while waiting for 'Unchoke' peer message: %w", err)
+		exitCode = 1
+		return nil, fmt.Errorf("failed to download piece %d. encountered an error while waiting for 'Unchoke' peer message: %w", piece.Index, err)
 	}
 
 	// todo: add a check to see if the remote peer for this connection has the piece we want to download
@@ -424,7 +440,7 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 	numOfBlocksDownloaded := 0
 
 	downloadedBlocks := make([]Block, numOfBlocks)
-	maxBatchSize := 3
+	maxBatchSize := 5
 	mutex := ReadWriteMutex{}
 	resultsQueue := make(chan BlockRequestResult)
 
@@ -441,6 +457,7 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 			result := <-resultsQueue
 
 			if result.err != nil {
+				exitCode = 1
 				return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.Index, result.err)
 			}
 
@@ -448,6 +465,7 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 			downloadedBlockIndex := downloadedBlock.Begin / BlockSize
 
 			if downloadedBlockIndex >= numOfBlocks {
+				exitCode = 1
 				return nil, fmt.Errorf("downloaded block offset %d is invalid", downloadedBlock.Begin)
 			}
 
@@ -483,7 +501,7 @@ func (p *PeerConnection) InitConnection() error {
 	// todo: handle bitfield response
 	if _, err := p.receiveMessage(Bitfield); err != nil {
 		fmt.Printf("failed to receive 'Bitfield' message from peer: %v", err)
-		return nil	
+		return nil
 	}
 
 	if !p.SupportsExtensions {

@@ -30,7 +30,7 @@ func ConnReadFull(conn net.Conn, buffer []byte) (int, error) {
 	bufferSize := len(buffer)
 	readStartIndex := 0
 
-	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		return readStartIndex, err
 	}
 
@@ -55,7 +55,7 @@ func ConnWriteFull(conn net.Conn, buffer []byte) (int, error) {
 	bufferSize := len(buffer)
 	writeStartIndex := 0
 
-	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := conn.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		return writeStartIndex, err
 	}
 
