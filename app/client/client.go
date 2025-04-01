@@ -145,7 +145,7 @@ func Download(src string, dest string) error {
 
 	for downloadedPiece := range downloadedPieces {
 		if downloadedPiece.Err != nil {
-			return fmt.Errorf("failed to download torrent: %w", err)
+			return fmt.Errorf("failed to download torrent: %w", downloadedPiece.Err)
 		}
 
 		file := filepath.Join(tempDir, fmt.Sprintf("%020d.piece", downloadedPiece.Piece.Index))
