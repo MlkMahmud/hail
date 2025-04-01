@@ -24,8 +24,9 @@ func addPeersToDownloadPool(config downloadPoolConfig) {
 	var mutex sync.Mutex
 	numOfPeerConnectionsInPool := 0
 	peerConnectionPoolHasBeenDrained := false
+	peerConnectionPoolSize := min(len(config.peers), 10)
 
-	for _, peer := range config.peers {
+	for i := 0; i < peerConnectionPoolSize; i++ {
 		go func(p torrent.Peer) {
 			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: config.torrentInfoHash, Peer: p})
 
@@ -70,7 +71,7 @@ func addPeersToDownloadPool(config downloadPoolConfig) {
 				*config.numOfPiecesDownloaded += 1
 				mutex.Unlock()
 			}
-		}(peer)
+		}(config.peers[i])
 	}
 
 	go func() {
