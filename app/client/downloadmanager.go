@@ -3,20 +3,16 @@ package client
 import (
 	"crypto/sha1"
 	"fmt"
-	"runtime"
-	"sync"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
 )
 
 type downloadManager struct {
-	activeDownload  download
-	connections     map[string]torrent.PeerConnection
-	mutex           sync.Mutex
-	queuedDownloads []download
+	activeDownload     downloadRequest
+	peerConnectionPool torrent.PeerConnectionPool
+	downloadQueue      []downloadRequest
 }
-
-type download struct {
+type downloadRequest struct {
 	name   string
 	peers  []torrent.Peer
 	pieces []torrent.Piece
@@ -30,63 +26,37 @@ type peerConnectionPoolDownloadConfig struct {
 	torrentInfoHash       [sha1.Size]byte
 }
 
-const (
-	maxNumOfPeerConnections = 30
-)
-
 func newDownloadManager(peers []torrent.Peer) *downloadManager {
-	return new(downloadManager)
+	downloadManager := new(downloadManager)
+	downloadManager.peerConnectionPool = *torrent.NewPeerConnectionPool()
+
+	return downloadManager
 }
 
-func (dm *downloadManager) addPeerConnectionToPool(peerConnection torrent.PeerConnection) {
-	dm.mutex.Lock()
-	dm.connections[peerConnection.PeerAddress] = peerConnection
-	dm.mutex.Unlock()
-
-	return
-}
-
-func (dm *downloadManager) dequeueDownload() *download {
-	if len(dm.queuedDownloads) == 0 {
+func (dm *downloadManager) dequeue() *downloadRequest {
+	if len(dm.downloadQueue) == 0 {
 		return nil
 	}
 
-	dequeuedDownload := dm.queuedDownloads[0]
-	dm.queuedDownloads = dm.queuedDownloads[1:]
+	dequeuedDownload := dm.downloadQueue[0]
+	dm.downloadQueue = dm.downloadQueue[1:]
 
 	return &dequeuedDownload
 }
 
-func (dm *downloadManager) enqueueDownload(download download) {
-	dm.queuedDownloads = append(dm.queuedDownloads, download)
+func (dm *downloadManager) enqueue(item downloadRequest) {
+	dm.downloadQueue = append(dm.downloadQueue, download)
 }
 
-func (dm *downloadManager) numOfPeerConnectionsInPool() int {
-	dm.mutex.Lock()
-	defer dm.mutex.Unlock()
-	num := len(dm.connections)
-	return num
-}
+func (dm *downloadManager) startDownload() {
+	dwnld := dm.dequeue()
 
-func (dm *downloadManager) removePeerConnectionFromPool(peerAddress string) {
-	dm.mutex.Lock()
-	delete(dm.connections, peerAddress)
-	dm.mutex.Unlock()
-}
-
-func (dm *downloadManager) initPeerConnectionPool(peers []torrent.Peer) {
-	peerConnectionPoolSize := min(len(peers), 2*runtime.NumCPU(), maxNumOfPeerConnections)
-
-	for i := range peerConnectionPoolSize {
-		peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: peers[i]})
-		dm.connections[peerConnection.PeerAddress] = *peerConnection
+	if dwnld == nil {
+		fmt.Println("download manager queue is empty.")
+		return
 	}
 
-	return
-}
-
-func (dm *downloadManager) startDownload(config peerConnectionPoolDownloadConfig) {
-	for _, peerConnection := range dm.connections {
+	for _, peerConnection := range dm.peerConnectionPool.Connections {
 		go func(p torrent.PeerConnection) {
 			for piece := range config.piecesToDownload {
 				downloadedPiece, err := p.DownloadPiece(piece)
