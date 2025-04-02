@@ -73,7 +73,7 @@ func main() {
 				log.Fatal(err)
 			}
 
-			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: trrnt.InfoHash, Peer: peers[0]})
+			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: peers[0]})
 
 			if err := peerConnection.InitConnection(); err != nil {
 				log.Fatal(err)
@@ -118,7 +118,7 @@ func main() {
 			port := uint16(portNum)
 			peer := torrent.Peer{IpAddress: host, Port: port}
 
-			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: trrnt.InfoHash, Peer: peer})
+			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: peer})
 
 			if err := peerConnection.InitConnection(); err != nil {
 				log.Fatal(err)
@@ -186,7 +186,7 @@ func main() {
 				log.Fatal(err)
 			}
 
-			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: trrnt.InfoHash, Peer: peers[0]})
+			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: peers[0]})
 
 			if err := peerConnection.InitConnection(); err != nil {
 				log.Fatal(err)
@@ -221,7 +221,7 @@ func main() {
 				log.Fatal(err)
 			}
 
-			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: trrnt.InfoHash, Peer: peers[0]})
+			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: peers[0]})
 			initErr := peerConnection.InitConnection()
 
 			if peerConnection.Conn != nil {

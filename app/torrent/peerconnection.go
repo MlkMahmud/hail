@@ -30,7 +30,6 @@ type PeerConnection struct {
 }
 
 type PeerConnectionConfig struct {
-	InfoHash [sha1.Size]byte
 	Peer     Peer
 }
 
@@ -53,7 +52,7 @@ const (
 
 func NewPeerConnection(config PeerConnectionConfig) *PeerConnection {
 	return &PeerConnection{
-		InfoHash:    config.InfoHash,
+		InfoHash: config.Peer.InfoHash,
 		PeerAddress: fmt.Sprintf("%s:%d", config.Peer.IpAddress, config.Peer.Port),
 	}
 }

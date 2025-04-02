@@ -19,6 +19,7 @@ import (
 )
 
 type Peer struct {
+	InfoHash  [sha1.Size]byte
 	IpAddress string
 	Port      uint16
 }
@@ -176,7 +177,7 @@ func (t *Torrent) DownloadMetadata() error {
 	}
 
 	for i := 0; i < numOfPeers && !hasDownloadedAllPieces; i++ {
-		peerConnection := NewPeerConnection(PeerConnectionConfig{InfoHash: t.InfoHash, Peer: peers[i]})
+		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peers[i]})
 
 		err := peerConnection.InitConnection()
 
@@ -346,8 +347,7 @@ func (t *Torrent) GetPeers() ([]Peer, error) {
 	for i, j := 0, 0; i < peersStringLen; i += peerSize {
 		IpAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
 		Port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
-		peersArr[j] = Peer{IpAddress, Port}
-
+		peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.InfoHash}
 		j++
 	}
 

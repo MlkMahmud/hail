@@ -28,7 +28,7 @@ func addPeersToDownloadPool(config downloadPoolConfig) {
 
 	for i := 0; i < peerConnectionPoolSize; i++ {
 		go func(p torrent.Peer) {
-			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{InfoHash: config.torrentInfoHash, Peer: p})
+			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: p})
 
 			mutex.Lock()
 			numOfPeerConnectionsInPool += 1
