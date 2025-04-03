@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"fmt"
+	"os"
+	"path/filepath"
 )
 
 type Block struct {
@@ -103,6 +105,16 @@ func (d *DownloadedPiece) CheckHashIntegrity() error {
 	}
 
 	return fmt.Errorf("hash '%x' for downloaded piece at index '%d' does not match expected '%x'", downloadedPieceHash, d.Piece.Index, d.Piece.Hash)
+}
+
+func (d *DownloadedPiece) WriteToDisk(dir string) error {
+	path := filepath.Join(dir, fmt.Sprintf("%020d.piece", d.Piece.Index))
+
+	if err := os.WriteFile(path, d.Data, 0666); err != nil {
+		return fmt.Errorf("failed to write piece '%d' to disk: %w", d.Piece.Index, err)
+	}
+
+	return nil
 }
 
 func (p *Piece) GetBlocks() []Block {
