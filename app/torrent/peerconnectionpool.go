@@ -22,8 +22,6 @@ func (p *PeerConnectionPool) AddPeerConnectionToPool(peerConnection PeerConnecti
 	p.mutex.Lock()
 	p.Connections[peerConnection.PeerAddress] = peerConnection
 	p.mutex.Unlock()
-
-	return
 }
 
 func (p *PeerConnectionPool) DrainConnectionPool() {
@@ -43,13 +41,16 @@ func (p *PeerConnectionPool) InitPeerConnectionPool(peers []Peer) {
 		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peers[i]})
 		p.Connections[peerConnection.PeerAddress] = *peerConnection
 	}
-
-	return
 }
 
-func (p *PeerConnectionPool) RemovePeerConnectionFromPool(peerAddress string) {
+func (p *PeerConnectionPool) RemovePeerConnectionFromPool(peerAddress string, onConnectionPoolDrained func()) {
 	p.mutex.Lock()
 	delete(p.Connections, peerAddress)
+
+	if len(p.Connections) == 0 && onConnectionPoolDrained != nil {
+		onConnectionPoolDrained()
+	}
+
 	p.mutex.Unlock()
 }
 
