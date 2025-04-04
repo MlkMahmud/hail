@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/torrent"
@@ -76,7 +77,34 @@ func (dr *DownloadRequest) markAsFailed() {
 }
 
 func (dr *DownloadRequest) mergeDownloadedPieces() error {
-	// todo: implement
+	// todo: check if dest is a directory
+	destFile, err := os.OpenFile(dr.dest, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+
+	if err != nil {
+		return err
+	}
+
+	defer destFile.Close()
+
+	entries, err := os.ReadDir(dr.tempDir)
+
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		path := filepath.Join(dr.tempDir, entry.Name())
+		contents, err := os.ReadFile(path)
+
+		if err != nil {
+			return nil
+		}
+
+		if _, err := destFile.Write(contents); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -86,6 +114,7 @@ func (dr *DownloadRequest) startDownload() {
 
 	if err != nil {
 		// handle error and move to next item
+		fmt.Println(err)
 	}
 
 	dr.tempDir = tempDir
@@ -105,35 +134,40 @@ func (dr *DownloadRequest) startDownload() {
 			for {
 				select {
 				case <-ct.Done():
-					return
+					{
+						return
+					}
 				case piece := <-piecesToDownload:
 					downloadedPiece, err := pc.DownloadPiece(piece)
 
 					if err != nil && pc.FailedAttempts >= torrent.MaxFailedAttempts {
+						fmt.Println(err)
 						piecesToDownload <- piece
 						connectionPool.RemovePeerConnectionFromPool(pc.PeerAddress, dr.markAsFailed)
 						return
 					}
 
 					if err != nil {
+						fmt.Println(err)
 						pc.FailedAttempts += 1
 						piecesToDownload <- piece
 						continue
 					}
 
 					if err := downloadedPiece.CheckHashIntegrity(); err != nil {
+						fmt.Println(err)
 						pc.FailedAttempts += 1
 						piecesToDownload <- piece
 						continue
 					}
 
 					if err := downloadedPiece.WriteToDisk(dr.tempDir); err != nil {
+						fmt.Println(err)
 						pc.FailedAttempts += 1
 						// todo: parse error to see if it's worth retrying.
 						piecesToDownload <- piece
 						continue
 					}
-
 					dr.updateProgress()
 				}
 			}
@@ -150,7 +184,7 @@ func (dr *DownloadRequest) startDownload() {
 
 func (dr *DownloadRequest) updateProgress() {
 	dr.mutex.Lock()
-	dr.numOfPiecesDownloaded = min(dr.numOfPiecesDownloaded, dr.numOfPiecesDownloaded+1)
+	dr.numOfPiecesDownloaded = min(dr.numOfPiecesDownloaded+1, dr.numOfPiecesToDownload)
 
 	defer dr.mutex.Unlock()
 
@@ -163,14 +197,19 @@ func (dr *DownloadRequest) updateProgress() {
 func (dr *DownloadRequest) waitForCompletion() error {
 	select {
 	case <-dr.completed:
-		dr.mergeDownloadedPieces()
-		dr.cancelFunc()
-		return nil
+		{
+			dr.mergeDownloadedPieces()
+			dr.cancelFunc()
+			return nil
+		}
 
 	case <-dr.failed:
-		dr.cancelFunc()
-		// todo: find a way to return an error here
-		return nil
+		{
+			dr.cancelFunc()
+			// todo: find a way to return an error here
+			return nil
+
+		}
 	}
 }
 

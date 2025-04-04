@@ -27,10 +27,11 @@ type PeerConnection struct {
 	PeerId             string
 	PeerExtensions     map[Extension]uint8
 	SupportsExtensions bool
+	Unchoked           bool
 }
 
 type PeerConnectionConfig struct {
-	Peer     Peer
+	Peer Peer
 }
 
 type ReadWriteMutex struct {
@@ -52,7 +53,7 @@ const (
 
 func NewPeerConnection(config PeerConnectionConfig) *PeerConnection {
 	return &PeerConnection{
-		InfoHash: config.Peer.InfoHash,
+		InfoHash:    config.Peer.InfoHash,
 		PeerAddress: fmt.Sprintf("%s:%d", config.Peer.IpAddress, config.Peer.Port),
 	}
 }
@@ -331,6 +332,24 @@ func (p *PeerConnection) receiveMetadataMessage() ([]byte, error) {
 	return metadataPiece, nil
 }
 
+func (p *PeerConnection) sendInterestAndAwaitUnchokeMessage() error {
+	if p.Unchoked {
+		return nil
+	}
+
+	if err := p.sendMessage(Interested, nil); err != nil {
+		return fmt.Errorf("failed to send 'Interested' message to peer: %w", err)
+	}
+
+	if _, err := p.receiveMessage(Unchoke); err != nil {
+		return fmt.Errorf("failed to receive 'Unchoke' message from peer: %w", err)
+	}
+
+	p.Unchoked = true
+
+	return nil
+}
+
 func (p *PeerConnection) sendExtensionHandshakeMessage() error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"m": map[string]any{
@@ -410,27 +429,12 @@ func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 }
 
 func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
-	exitCode := 0
-
-	defer func() {
-		if exitCode != 0 && p.Conn != nil {
-			p.Conn = nil
-		}
-	}()
-
 	if err := p.InitConnection(); err != nil {
-		exitCode = 1
 		return nil, fmt.Errorf("failed to initialize peer connection: %w", err)
 	}
 
-	if err := p.sendMessage(Interested, nil); err != nil {
-		exitCode = 1
-		return nil, fmt.Errorf("failed to dowmload piece %d. encountered an error while sending 'Interested' peer message: %w", piece.Index, err)
-	}
-
-	if _, err := p.receiveMessage(Unchoke); err != nil {
-		exitCode = 1
-		return nil, fmt.Errorf("failed to download piece %d. encountered an error while waiting for 'Unchoke' peer message: %w", piece.Index, err)
+	if err := p.sendInterestAndAwaitUnchokeMessage(); err != nil {
+		return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.Index, err)
 	}
 
 	// todo: add a check to see if the remote peer for this connection has the piece we want to download
@@ -456,7 +460,6 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 			result := <-resultsQueue
 
 			if result.err != nil {
-				exitCode = 1
 				return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.Index, result.err)
 			}
 
@@ -464,7 +467,7 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 			downloadedBlockIndex := downloadedBlock.Begin / BlockSize
 
 			if downloadedBlockIndex >= numOfBlocks {
-				exitCode = 1
+
 				return nil, fmt.Errorf("downloaded block offset %d is invalid", downloadedBlock.Begin)
 			}
 

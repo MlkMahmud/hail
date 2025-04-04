@@ -36,6 +36,7 @@ func (p *PeerConnectionPool) DrainConnectionPool() {
 
 func (p *PeerConnectionPool) InitPeerConnectionPool(peers []Peer) {
 	peerConnectionPoolSize := min(len(peers), 2*runtime.NumCPU(), maxNumOfPeerConnections)
+	p.Connections = make(map[string]PeerConnection)
 
 	for i := range peerConnectionPoolSize {
 		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peers[i]})
