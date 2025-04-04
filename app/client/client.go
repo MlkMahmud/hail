@@ -32,7 +32,7 @@ func Download(src string, dest string) error {
 
 	dm := downloader.NewDownloadManager()
 
-	dm.Enqueue(downloader.NewDowloadRequest(downloader.DownloadRequestConfig{
+	dm.Enqueue(downloader.NewDownloadRequest(downloader.DownloadRequestConfig{
 		Dest:   dest,
 		Name:   trrnt.Info.Name,
 		Peers:  peers,

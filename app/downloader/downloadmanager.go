@@ -43,7 +43,7 @@ func NewDownloadManager() *DownloadManager {
 	return new(DownloadManager)
 }
 
-func NewDowloadRequest(config DownloadRequestConfig) *DownloadRequest {
+func NewDownloadRequest(config DownloadRequestConfig) *DownloadRequest {
 	var mutex sync.Mutex
 	var once sync.Once
 
