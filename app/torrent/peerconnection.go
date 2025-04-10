@@ -124,7 +124,7 @@ func (p *PeerConnection) completeBaseHandshake() error {
 		return fmt.Errorf("received info hash %v does not match expected info hash %v", receivedInfoHash, p.InfoHash)
 	}
 
-	//The bit selected for the extension protocol is bit 20 from the right (counting starts at 0). So (reserved_byte[5] & 0x10) is the expression to use for checking if the client supports extended messaging.
+	//The bit selected for the extension protocol is bit 20th from the right (counting starts at 0). So (reserved_byte[5] & 0x10) is the expression to use for checking if the client supports extended messaging.
 	if reservedByteIndex := 25; bytes.Equal(responseBuffer[reservedByteIndex:reservedByteIndex+1], []byte{byte(0x10)}) {
 		p.SupportsExtensions = true
 	}

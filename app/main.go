@@ -94,17 +94,6 @@ func main() {
 
 	case "handshake":
 		{
-			torrentFilePath := os.Args[2]
-			trrnt, err := torrent.NewTorrent(torrentFilePath)
-
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			if _, err := trrnt.GetPeers(); err != nil {
-				log.Fatal(err)
-			}
-
 			peerAddress := os.Args[3]
 			addressParts := strings.Split(peerAddress, ":")
 			host := addressParts[0]
