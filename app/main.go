@@ -94,6 +94,13 @@ func main() {
 
 	case "handshake":
 		{
+
+			trrnt, err := torrent.NewTorrent(os.Args[2])
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
 			peerAddress := os.Args[3]
 			addressParts := strings.Split(peerAddress, ":")
 			host := addressParts[0]
@@ -105,7 +112,7 @@ func main() {
 			}
 
 			port := uint16(portNum)
-			peer := torrent.Peer{IpAddress: host, Port: port}
+			peer := torrent.Peer{InfoHash: trrnt.InfoHash, IpAddress: host, Port: port}
 
 			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: peer})
 
