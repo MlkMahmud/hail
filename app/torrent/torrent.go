@@ -130,10 +130,18 @@ func generateTorrentFromFile(torrentFilepath string) (*Torrent, error) {
 }
 
 func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
+	if len(magnetLink) == 0 {
+		return nil, fmt.Errorf("magnet link cannot be an empty string")
+	}
+
 	parsedUrl, err := url.Parse(magnetLink)
 
 	if err != nil {
 		return nil, err
+	}
+
+	if !strings.HasPrefix(strings.TrimLeft(parsedUrl.RequestURI(), " "), "magnet:") {
+		return nil, fmt.Errorf("magnet link URI is invalid")
 	}
 
 	params, err := url.ParseQuery(parsedUrl.RawQuery)
@@ -142,12 +150,18 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 		return nil, err
 	}
 
-	for key, value := range map[string]string{"dn": "name", "tr": "tracker url", "xt": "info hash"} {
-		received, ok := params[key]
+	if infoHashParam, ok := params["xt"]; !ok || len(infoHashParam) != 1 {
+		return nil, fmt.Errorf("magnet link must include an 'xt' (info hash) paramater")
+	}
 
-		if !ok || len(received) != 1 {
-			return nil, fmt.Errorf("magnet link '%s' parameter is invalid. received value %v", value, received)
-		}
+	if trackerParam, ok := params["tr"]; !ok || len(trackerParam) == 0 {
+		return nil, fmt.Errorf("magnet link must include a 'tr' (list of trackers) parameter")
+	}
+
+	torrentName := ""
+
+	if nameParam, ok := params["dn"]; ok && len(nameParam) > 0 {
+		torrentName = nameParam[0]
 	}
 
 	infoHash, err := getInfoHashFromQueryString(params["xt"][0])
@@ -158,7 +172,7 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 
 	return &Torrent{
 		Info: TorrentInfo{
-			Name: params["dn"][0],
+			Name: torrentName,
 		},
 		InfoHash:   *infoHash,
 		TrackerUrl: params["tr"][0],
