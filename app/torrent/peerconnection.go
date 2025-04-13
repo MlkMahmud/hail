@@ -161,7 +161,7 @@ func (p *PeerConnection) downloadBlock(block Block, resultsQueue chan<- BlockReq
 		mutex.writer.Unlock()
 
 		if err != nil {
-			mainError = fmt.Errorf("failed to download block: %w", err)
+			mainError = fmt.Errorf("failed to send 'Request' message to peer: %w", err)
 			continue
 		}
 
@@ -170,7 +170,7 @@ func (p *PeerConnection) downloadBlock(block Block, resultsQueue chan<- BlockReq
 		mutex.reader.Unlock()
 
 		if err != nil {
-			mainError = fmt.Errorf("failed to download block: %w", err)
+			mainError = fmt.Errorf("failed to receive 'Piece' message from peer: %w", err)
 			continue
 		}
 
@@ -444,7 +444,7 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 	}
 
 	// todo: add a check to see if the remote peer for this connection has the piece we want to download
-	blocks := piece.GetBlocks()
+	blocks := piece.getBlocks()
 	numOfBlocks := len(blocks)
 	numOfBlocksDownloaded := 0
 
@@ -473,7 +473,6 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 			downloadedBlockIndex := downloadedBlock.Begin / BlockSize
 
 			if downloadedBlockIndex >= numOfBlocks {
-
 				return nil, fmt.Errorf("downloaded block offset %d is invalid", downloadedBlock.Begin)
 			}
 

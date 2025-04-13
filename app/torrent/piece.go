@@ -117,7 +117,7 @@ func (d *DownloadedPiece) WriteToDisk(dir string) error {
 	return nil
 }
 
-func (p *Piece) GetBlocks() []Block {
+func (p *Piece) getBlocks() []Block {
 	blocks := []Block{}
 
 	numOfFullSizedBlocks := int(p.Length / BlockSize)
