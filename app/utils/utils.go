@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -84,35 +83,4 @@ func GenerateRandomString(length int, charset string) string {
 	}
 
 	return string(byteArr)
-}
-
-func MergeSortedDirectoryToFile(dir string, dest string) error {
-	destFile, err := os.OpenFile(dest, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-
-	if err != nil {
-		return err
-	}
-
-	defer destFile.Close()
-
-	entries, err := os.ReadDir(dir)
-
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		path := filepath.Join(dir, entry.Name())
-		contents, err := os.ReadFile(path)
-
-		if err != nil {
-			return nil
-		}
-
-		if _, err := destFile.Write(contents); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
