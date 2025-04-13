@@ -170,13 +170,12 @@ func (t *Torrent) DownloadMetadata() error {
 	index := 0
 	metadataBuffer := []byte{}
 	peers, err := t.GetPeers()
-	numOfPeers := len(peers)
 
 	if err != nil {
 		return nil
 	}
 
-	for i := 0; i < numOfPeers && !hasDownloadedAllPieces; i++ {
+	for i, numOfPeers := 0, len(peers); i < numOfPeers && !hasDownloadedAllPieces; i++ {
 		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peers[i]})
 
 		if err := peerConnection.InitConnection(); err != nil {
