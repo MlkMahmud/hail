@@ -26,9 +26,7 @@ func (p *PeerConnectionPool) AddPeerConnectionToPool(peerConnection PeerConnecti
 
 func (p *PeerConnectionPool) DrainConnectionPool() {
 	for _, peerConnection := range p.Connections {
-		if peerConnection.Conn != nil {
-			peerConnection.Conn.Close()
-		}
+		peerConnection.Close()
 	}
 
 	p.Connections = make(map[string]PeerConnection)

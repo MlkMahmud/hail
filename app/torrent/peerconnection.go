@@ -428,6 +428,12 @@ func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 	return nil
 }
 
+func (p *PeerConnection) Close() {
+	if p.Conn != nil {
+		p.Conn.Close()
+	}
+}
+
 func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 	if err := p.InitConnection(); err != nil {
 		return nil, fmt.Errorf("failed to initialize peer connection: %w", err)

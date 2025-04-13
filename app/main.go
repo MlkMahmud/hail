@@ -220,9 +220,7 @@ func main() {
 			peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: peers[0]})
 			initErr := peerConnection.InitConnection()
 
-			if peerConnection.Conn != nil {
-				defer peerConnection.Conn.Close()
-			}
+			defer peerConnection.Close()
 
 			if initErr != nil {
 				log.Fatal(initErr)
