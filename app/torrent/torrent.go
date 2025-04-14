@@ -140,7 +140,7 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 		return nil, err
 	}
 
-	if !strings.HasPrefix(strings.TrimLeft(parsedUrl.RequestURI(), " "), "magnet:") {
+	if parsedUrl.Scheme != "magnet" {
 		return nil, fmt.Errorf("magnet link URI is invalid")
 	}
 
@@ -180,6 +180,10 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 }
 
 func (t *Torrent) DownloadMetadata() error {
+	if t.Info.Pieces != nil {
+		return nil
+	}
+
 	hasDownloadedAllPieces := false
 	index := 0
 	metadataBuffer := []byte{}
