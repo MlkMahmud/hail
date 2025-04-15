@@ -121,7 +121,7 @@ func (dr *DownloadRequest) startDownload() {
 	dr.context, dr.cancelFunc = context.WithCancel(context.Background())
 
 	connectionPool := torrent.NewPeerConnectionPool()
-	connectionPool.InitPeerConnectionPool(dr.peers)
+	connectionPool.InitPeerConnectionPool(dr.peers, len(dr.pieces))
 
 	piecesToDownload := make(chan torrent.Piece, dr.numOfPiecesToDownload)
 

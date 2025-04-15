@@ -20,6 +20,7 @@ type BlockRequestResult struct {
 }
 
 type PeerConnection struct {
+	availablePieces    []bool
 	Conn               net.Conn
 	FailedAttempts     int
 	InfoHash           [sha1.Size]byte
@@ -31,13 +32,18 @@ type PeerConnection struct {
 }
 
 type PeerConnectionConfig struct {
-	Peer Peer
+	Peer        Peer
+	NumOfPieces int
 }
 
 type ReadWriteMutex struct {
 	writer sync.Mutex
 	reader sync.Mutex
 }
+
+const (
+	byteSize = 8
+)
 
 const (
 	handshakeMessageLen = pstrLen + 49
@@ -48,13 +54,14 @@ const (
 )
 
 const (
-	MaxFailedAttempts = 2
+	MaxFailedAttempts = 3
 )
 
 func NewPeerConnection(config PeerConnectionConfig) *PeerConnection {
 	return &PeerConnection{
-		InfoHash:    config.Peer.InfoHash,
-		PeerAddress: fmt.Sprintf("%s:%d", config.Peer.IpAddress, config.Peer.Port),
+		availablePieces: make([]bool, config.NumOfPieces),
+		InfoHash:        config.Peer.InfoHash,
+		PeerAddress:     fmt.Sprintf("%s:%d", config.Peer.IpAddress, config.Peer.Port),
 	}
 }
 
@@ -198,6 +205,38 @@ func (p *PeerConnection) downloadBlock(block Block, resultsQueue chan<- BlockReq
 		block: downloadedBlock,
 		err:   mainError,
 	}
+}
+
+func (p *PeerConnection) parseBitFieldMessage() error {
+	message, err := p.receiveMessage(Bitfield)
+
+	if err != nil {
+		return fmt.Errorf("failed to receive 'Bitfield' message from peer: %w", err)
+	}
+
+	numOfPieces := len(p.availablePieces)
+	expectedBitFieldLength := int(math.Ceil(float64(numOfPieces) / byteSize))
+
+	if numOfPieces == 0 {
+		return nil
+	}
+
+	if receivedBitfieldLength := len(message.Payload); receivedBitfieldLength != expectedBitFieldLength {
+		return fmt.Errorf("expected 'Bitfield' payload to contain '%d' bytes, but got '%d'", expectedBitFieldLength, receivedBitfieldLength)
+	}
+
+	for index := range numOfPieces {
+		byteArrayIndex := index / byteSize
+		byteIndex := index % byteSize
+		// In an 8-bit number, the MSB (bit 7) has a place value of 2⁷,
+		placeValue := 7 - byteIndex
+		mask := int(math.Pow(float64(2), float64(placeValue)))
+
+		isBitSet := (message.Payload[byteArrayIndex] & byte(mask)) != 0
+		p.availablePieces[index] = isBitSet
+	}
+
+	return nil
 }
 
 func (p *PeerConnection) receiveExtensionHandshakeMessage() error {
@@ -506,7 +545,7 @@ func (p *PeerConnection) InitConnection() error {
 	}
 
 	// todo: handle bitfield response
-	if _, err := p.receiveMessage(Bitfield); err != nil {
+	if err := p.parseBitFieldMessage(); err != nil {
 		fmt.Printf("failed to receive 'Bitfield' message from peer: %v", err)
 		return nil
 	}

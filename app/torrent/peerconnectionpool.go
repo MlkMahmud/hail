@@ -32,12 +32,12 @@ func (p *PeerConnectionPool) DrainConnectionPool() {
 	p.Connections = make(map[string]PeerConnection)
 }
 
-func (p *PeerConnectionPool) InitPeerConnectionPool(peers []Peer) {
+func (p *PeerConnectionPool) InitPeerConnectionPool(peers []Peer, numOfPieces int) {
 	peerConnectionPoolSize := min(len(peers), 2*runtime.NumCPU(), maxNumOfPeerConnections)
 	p.Connections = make(map[string]PeerConnection)
 
 	for i := range peerConnectionPoolSize {
-		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peers[i]})
+		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peers[i], NumOfPieces: numOfPieces})
 		p.Connections[peerConnection.PeerAddress] = *peerConnection
 	}
 }
