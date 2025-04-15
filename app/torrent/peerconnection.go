@@ -207,6 +207,14 @@ func (p *PeerConnection) downloadBlock(block Block, resultsQueue chan<- BlockReq
 	}
 }
 
+func (p *PeerConnection) hasPiece(pieceIndex int) bool {
+	if pieceIndex < 0 || pieceIndex >= len(p.availablePieces) {
+		return false
+	}
+
+	return p.availablePieces[pieceIndex]
+}
+
 func (p *PeerConnection) parseBitFieldMessage() error {
 	message, err := p.receiveMessage(Bitfield)
 
@@ -478,11 +486,15 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 		return nil, fmt.Errorf("failed to initialize peer connection: %w", err)
 	}
 
+	if !p.hasPiece(piece.Index) {
+		// todo: should this be treated as an error?
+		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.PeerAddress, piece.Index)
+	}
+
 	if err := p.sendInterestAndAwaitUnchokeMessage(); err != nil {
 		return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.Index, err)
 	}
 
-	// todo: add a check to see if the remote peer for this connection has the piece we want to download
 	blocks := piece.getBlocks()
 	numOfBlocks := len(blocks)
 	numOfBlocksDownloaded := 0
