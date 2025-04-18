@@ -25,11 +25,17 @@ func CheckIfFileExists(filepath string) bool {
 	return !errors.Is(err, os.ErrNotExist)
 }
 
-func ConnReadFull(conn net.Conn, buffer []byte) (int, error) {
+func ConnReadFull(conn net.Conn, buffer []byte, wait time.Duration) (int, error) {
 	bufferSize := len(buffer)
 	readStartIndex := 0
 
-	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+	duration := wait
+
+	if duration == 0 {
+		duration = 5 * time.Second
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(duration)); err != nil {
 		return readStartIndex, err
 	}
 
@@ -50,11 +56,17 @@ func ConnReadFull(conn net.Conn, buffer []byte) (int, error) {
 	return readStartIndex, nil
 }
 
-func ConnWriteFull(conn net.Conn, buffer []byte) (int, error) {
+func ConnWriteFull(conn net.Conn, buffer []byte, wait time.Duration) (int, error) {
 	bufferSize := len(buffer)
 	writeStartIndex := 0
 
-	if err := conn.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
+	duration := wait
+
+	if duration == 0 {
+		duration = 5 * time.Second
+	}
+
+	if err := conn.SetWriteDeadline(time.Now().Add(duration)); err != nil {
 		return writeStartIndex, err
 	}
 

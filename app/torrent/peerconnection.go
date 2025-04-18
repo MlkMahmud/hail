@@ -103,13 +103,13 @@ func (p *PeerConnection) completeBaseHandshake() error {
 	index += copy(messageBuffer[index:], p.InfoHash[:])
 	index += copy(messageBuffer[index:], peerId[:])
 
-	if _, err := utils.ConnWriteFull(p.Conn, messageBuffer); err != nil {
+	if _, err := utils.ConnWriteFull(p.Conn, messageBuffer, 0); err != nil {
 		return fmt.Errorf("failed to send base handshake message: %w", err)
 	}
 
 	responseBuffer := make([]byte, handshakeMessageLen)
 
-	if _, err := utils.ConnReadFull(p.Conn, responseBuffer); err != nil {
+	if _, err := utils.ConnReadFull(p.Conn, responseBuffer, 0); err != nil {
 		return fmt.Errorf("failed to receive base handshake response: %w", err)
 	}
 
@@ -302,14 +302,14 @@ func (p *PeerConnection) receiveExtensionHandshakeMessage() error {
 func (p *PeerConnection) receiveMessage(messageId MessageId) (*Message, error) {
 	messageLengthBuffer := make([]byte, 4)
 
-	if _, err := utils.ConnReadFull(p.Conn, messageLengthBuffer); err != nil {
+	if _, err := utils.ConnReadFull(p.Conn, messageLengthBuffer, 0); err != nil {
 		return nil, err
 	}
 
 	messageLength := binary.BigEndian.Uint32(messageLengthBuffer)
 	messageBuffer := make([]byte, messageLength)
 
-	if _, err := utils.ConnReadFull(p.Conn, messageBuffer); err != nil {
+	if _, err := utils.ConnReadFull(p.Conn, messageBuffer, 0); err != nil {
 		return nil, err
 	}
 
@@ -442,7 +442,7 @@ func (p *PeerConnection) sendMessage(messageId MessageId, payload []byte) error 
 	messageBuffer[index] = byte(messageId)
 	copy(messageBuffer[index+1:], payload)
 
-	if _, err := utils.ConnWriteFull(p.Conn, messageBuffer); err != nil {
+	if _, err := utils.ConnWriteFull(p.Conn, messageBuffer, 0); err != nil {
 		return err
 	}
 
@@ -556,7 +556,6 @@ func (p *PeerConnection) InitConnection() error {
 		return err
 	}
 
-	// todo: handle bitfield response
 	if err := p.parseBitFieldMessage(); err != nil {
 		fmt.Printf("failed to receive 'Bitfield' message from peer: %v", err)
 		return nil

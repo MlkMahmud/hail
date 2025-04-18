@@ -7,11 +7,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
@@ -177,6 +180,78 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 		InfoHash:   *infoHash,
 		TrackerUrl: params["tr"][0],
 	}, nil
+}
+
+func getPeersOverUDP(t *Torrent) ([]Peer, error) {
+	parsedUrl, err := url.Parse(t.TrackerUrl)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tracker URL: %w", err)
+	}
+
+	if scheme := parsedUrl.Scheme; scheme != "udp" {
+		return nil, fmt.Errorf("tracker scheme must be 'UDP' got '%s'", scheme)
+	}
+
+	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%s", parsedUrl.Host, parsedUrl.Port()))
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve tracker URL: %w", err)
+	}
+
+	conn, err := net.DialTimeout("udp", addr.String(), 5*time.Second)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to initiate connection with tracker: %w", err)
+	}
+
+	defer conn.Close()
+
+	// send connect message
+	// receive response
+	// send announce message
+	// receive annouce response
+
+	return nil, nil
+}
+
+func sendConnectRequest(conn net.Conn) (uint32, error) {
+	/*
+		connect request:
+		Offset  Size            Name            Value
+		0       64-bit integer  protocol_id     0x41727101980 // magic constant
+		8       32-bit integer  action          0 // connect
+		12      32-bit integer  transaction_id
+		16
+	*/
+	connectRequestSize := 16
+	buffer := make([]byte, connectRequestSize)
+	transactionId := rand.Uint32() 
+	index := 0
+
+	binary.BigEndian.PutUint64(buffer[index:], 0x41727101980)
+	index += 8
+
+	binary.BigEndian.PutUint32(buffer[index:], 0)
+	index += 4
+
+	binary.BigEndian.PutUint32(buffer[index:], transactionId)
+
+	
+	// wrap this code in retry logic
+	if _, err := utils.ConnWriteFull(conn, buffer, 10 * time.Second); err != nil {
+		return 0, fmt.Errorf("failed to send connect request to tracker: %w", err)
+	}
+
+	responseBuffer := make([]byte, connectRequestSize)
+
+	if _, err := utils.ConnReadFull(conn, responseBuffer, 10 * time.Second); err != nil {
+		return 0, fmt.Errorf("failed to received a connect response from tracker: %w", err)
+	}
+
+
+	// todo: parse response and get connection_id 
+	return 0, nil
 }
 
 func (t *Torrent) DownloadMetadata() error {
