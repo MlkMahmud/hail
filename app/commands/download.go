@@ -50,12 +50,20 @@ func HandleDownloadPiece(ctx *cli.Context) error {
 		return fmt.Errorf("piece index is out of bounds. torrent contains only %d pieces", numOfPieces)
 	}
 
-	peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: peers[0]})
+	var downloadedPiece *torrent.DownloadedPiece
+	var downloadErr error
 
-	downloadedPiece, err := peerConnection.DownloadPiece(trrnt.Info.Pieces[pieceIndex])
+	for _, peer := range peers {
+		peerConnection := torrent.NewPeerConnection(torrent.PeerConnectionConfig{Peer: peer})
+		downloadedPiece, downloadErr = peerConnection.DownloadPiece(trrnt.Info.Pieces[pieceIndex])
 
-	if err != nil {
-		return err
+		if downloadErr == nil {
+			break
+		}
+	}
+
+	if downloadErr != nil {
+		return downloadErr
 	}
 
 	if err := os.WriteFile(dest, downloadedPiece.Data, 0644); err != nil {

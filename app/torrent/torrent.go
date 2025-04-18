@@ -296,8 +296,60 @@ func (t *Torrent) getTrackerUrlWithParams() string {
 	return fmt.Sprintf("%s?%s", t.TrackerUrl, queryString)
 }
 
-func (t *Torrent) GetPeers() ([]Peer, error) {
+func (t *Torrent) parseTrackerResponse(res []byte) ([]Peer, error) {
+	decodedResponse, _, err := bencode.DecodeValue(res)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to decoded tracker response: %w", err)
+	}
+
+	dict, ok := decodedResponse.(map[string]any)
+
+	if !ok {
+		return nil, fmt.Errorf("decoded response type \"%T\" is invalid", decodedResponse)
+	}
+
+	if failureMsg, ok := dict["failure reason"].(string); ok {
+		return nil, fmt.Errorf("failed to get list of peers: %s", failureMsg)
+	}
+
+	if warningMsg, ok := dict["warning message"].(string); ok {
+		fmt.Println(warningMsg)
+	}
+
+	peers, exists := dict["peers"]
+
+	if !exists {
+		return nil, fmt.Errorf("decoded response does not include a \"peers\" key")
+	}
+
+	peersValue, ok := peers.(string)
+
+	if !ok {
+		return nil, fmt.Errorf("decoded value of \"peers\" is invalid. expected a string got %T", peers)
+	}
+
+	peersStringLen := len(peersValue)
 	peerSize := 6
+
+	if peersStringLen%peerSize != 0 {
+		return nil, fmt.Errorf("peers value must be a multiple of '%d' bytes", peerSize)
+	}
+
+	numOfPeers := peersStringLen / peerSize
+	peersArr := make([]Peer, numOfPeers)
+
+	for i, j := 0, 0; i < peersStringLen; i += peerSize {
+		IpAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
+		Port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
+		peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.InfoHash}
+		j++
+	}
+
+	return peersArr, nil
+}
+
+func (t *Torrent) GetPeers() ([]Peer, error) {
 	trackerUrl := t.getTrackerUrlWithParams()
 
 	req, err := http.NewRequest("GET", trackerUrl, nil)
@@ -323,45 +375,11 @@ func (t *Torrent) GetPeers() ([]Peer, error) {
 		}
 	}
 
-	decodedResponse, _, err := bencode.DecodeValue(trackerResponse)
+	peers, err := t.parseTrackerResponse(trackerResponse)
 
 	if err != nil {
 		return nil, err
 	}
 
-	dict, ok := decodedResponse.(map[string]any)
-
-	if !ok {
-		return nil, fmt.Errorf("decoded response type \"%T\" is invalid", decodedResponse)
-	}
-
-	peers, exists := dict["peers"]
-
-	if !exists {
-		return nil, fmt.Errorf("decoded response does not include a \"peers\" key")
-	}
-
-	peersValue, ok := peers.(string)
-
-	if !ok {
-		return nil, fmt.Errorf("decoded value of \"peers\" is invalid. expected a string got %T", peers)
-	}
-
-	peersStringLen := len(peersValue)
-
-	if peersStringLen%peerSize != 0 {
-		return nil, fmt.Errorf("peers value must be a multiple of '%d' bytes", peerSize)
-	}
-
-	numOfPeers := peersStringLen / peerSize
-	peersArr := make([]Peer, numOfPeers)
-
-	for i, j := 0, 0; i < peersStringLen; i += peerSize {
-		IpAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
-		Port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
-		peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.InfoHash}
-		j++
-	}
-
-	return peersArr, nil
+	return peers, nil
 }
