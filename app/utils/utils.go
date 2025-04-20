@@ -19,6 +19,12 @@ var (
 		rand.NewSource(time.Now().UnixNano()))
 )
 
+type RetryOptions[T any] struct {
+	Delay      time.Duration
+	MaxAttemps int
+	Operation  func() (T, error)
+}
+
 func CheckIfFileExists(filepath string) bool {
 	_, err := os.Stat(filepath)
 
@@ -95,4 +101,21 @@ func GenerateRandomString(length int, charset string) string {
 	}
 
 	return string(byteArr)
+}
+
+func Retry[T any](options RetryOptions[T]) (T, error) {
+	var res T
+	var err error
+
+	for range options.MaxAttemps {
+		res, err = options.Operation()
+
+		if err == nil {
+			break
+		}
+
+		time.Sleep(options.Delay)
+	}
+
+	return res, err
 }

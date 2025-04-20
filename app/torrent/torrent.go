@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -208,6 +209,12 @@ func getPeersOverUDP(t *Torrent) ([]Peer, error) {
 	defer conn.Close()
 
 	// send connect message
+	connectionId, err := sendConnectRequest(conn)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get list of peers: %w", err)
+	}
+
 	// receive response
 	// send announce message
 	// receive annouce response
@@ -215,7 +222,7 @@ func getPeersOverUDP(t *Torrent) ([]Peer, error) {
 	return nil, nil
 }
 
-func sendConnectRequest(conn net.Conn) (uint32, error) {
+func sendConnectRequest(conn net.Conn) (uint64, error) {
 	/*
 		connect request:
 		Offset  Size            Name            Value
@@ -224,34 +231,59 @@ func sendConnectRequest(conn net.Conn) (uint32, error) {
 		12      32-bit integer  transaction_id
 		16
 	*/
+	action := uint32(0)
 	connectRequestSize := 16
-	buffer := make([]byte, connectRequestSize)
-	transactionId := rand.Uint32() 
+	reqBuffer := make([]byte, connectRequestSize)
+	resBuffer := make([]byte, connectRequestSize)
+
+	transactionId := rand.Uint32()
 	index := 0
 
-	binary.BigEndian.PutUint64(buffer[index:], 0x41727101980)
+	binary.BigEndian.PutUint64(reqBuffer[index:], 0x41727101980)
 	index += 8
 
-	binary.BigEndian.PutUint32(buffer[index:], 0)
+	binary.BigEndian.PutUint32(reqBuffer[index:], action)
 	index += 4
 
-	binary.BigEndian.PutUint32(buffer[index:], transactionId)
+	binary.BigEndian.PutUint32(reqBuffer[index:], transactionId)
 
-	
-	// wrap this code in retry logic
-	if _, err := utils.ConnWriteFull(conn, buffer, 10 * time.Second); err != nil {
-		return 0, fmt.Errorf("failed to send connect request to tracker: %w", err)
-	}
+	attempt := 0
 
-	responseBuffer := make([]byte, connectRequestSize)
+	connectionId, err := utils.Retry(utils.RetryOptions[uint64]{
+		Delay: 3 * time.Second,
+		Operation: func() (uint64, error) {
+			defer func() {
+				attempt += 1
+			}()
 
-	if _, err := utils.ConnReadFull(conn, responseBuffer, 10 * time.Second); err != nil {
-		return 0, fmt.Errorf("failed to received a connect response from tracker: %w", err)
-	}
+			if _, err := utils.ConnWriteFull(conn, reqBuffer, 5*time.Second); err != nil {
+				return 0, fmt.Errorf("failed to send 'connect' message request to UDP tracker: %w", err)
+			}
 
+			/*
+				If a response is not received after 15 * 2 ^ n seconds,
+				the client should retransmit the request, where n starts at 0 and is increased up to 8 (3840 seconds) after every retransmission.
+			*/
+			timeout := time.Duration(15 * (int(math.Pow(2, float64(attempt)))))
 
-	// todo: parse response and get connection_id 
-	return 0, nil
+			if _, err := utils.ConnReadFull(conn, resBuffer, timeout); err != nil {
+				return 0, fmt.Errorf("failed to receive 'connect' message response from tracker: %w", err)
+			}
+
+			if receivedAction := binary.BigEndian.Uint32(resBuffer); receivedAction != action {
+				return 0, fmt.Errorf("received action value '%d' does not match expected value '%d'", receivedAction, action)
+			}
+
+			if receivedTransactionId := binary.BigEndian.Uint32(resBuffer[4:]); receivedTransactionId != transactionId {
+				return 0, fmt.Errorf("received transaction_id '%d' does not match expected value '%d'", receivedTransactionId, transactionId)
+			}
+
+			return binary.BigEndian.Uint64(resBuffer[8:]), nil
+		},
+		MaxAttemps: 4,
+	})
+
+	return connectionId, err
 }
 
 func (t *Torrent) DownloadMetadata() error {
