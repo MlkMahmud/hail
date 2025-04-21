@@ -5,7 +5,6 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -214,26 +213,31 @@ func parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 		return torrentInfo, fmt.Errorf("metainfo 'info' dictionary must contain a 'files' or 'length' property")
 	}
 
-	length, ok := infoDict["length"].(int)
+	fileLength, ok := infoDict["length"].(int)
 
 	if !ok {
-		return torrentInfo, fmt.Errorf("'length' property of metainfo info dictionary must be an integer not %T", length)
+		return torrentInfo, fmt.Errorf("'length' property of metainfo info dictionary must be an integer not %T", fileLength)
 	}
 
-	pieces, err := parsePieces(length, infoDict["pieces"].(string), infoDict["piece length"].(int))
+	pieces, _, err := parsePiecesHashes(piecesParserConfig{
+		fileLength:   fileLength,
+		pieceLength:  infoDict["piece length"].(int),
+		piecesHashes: infoDict["pieces"].(string),
+	})
 
 	if err != nil {
-		return torrentInfo, err
+		return torrentInfo, fmt.Errorf("failed to parse pieces hashes: %w", err)
 	}
 
 	files := []File{{
-		Length: length,
+		Length: fileLength,
 		Name:   infoDict["name"].(string),
 		Pieces: pieces,
 	}}
 
-	torrentInfo.Files = files
-	return torrentInfo, nil
+	return TorrentInfo{
+		Files: files,
+	}, nil
 }
 
 func parseMultiFileTorrent(infoDict map[string]any) (TorrentInfo, error) {
@@ -276,24 +280,26 @@ func parseMultiFileTorrent(infoDict map[string]any) (TorrentInfo, error) {
 			pathList[index] = entry.(string)
 		}
 
-		length := file["length"].(int)
+		fileLength := file["length"].(int)
 		path := filepath.Join(pathList...)
-		remainingPieces := pieces[piecesIndex:]
-		requiredNumOfPieces := int(math.Ceil(float64(length) / float64(pieceLength)))
 
-		pieces, err := parsePieces(length, remainingPieces, pieceLength)
+		pieces, nextPieceIndex, err := parsePiecesHashes(piecesParserConfig{
+			fileLength:   fileLength,
+			pieceLength:  pieceLength,
+			piecesHashes: pieces[piecesIndex:],
+		})
 
 		if err != nil {
 			return torrentInfo, fmt.Errorf("failed to parse filelist entry at index '%d': %w", i, err)
 		}
 
 		files[i] = File{
-			Length: length,
+			Length: fileLength,
 			Name:   filepath.Join(infoDict["name"].(string), path),
 			Pieces: pieces,
 		}
 
-		piecesIndex += requiredNumOfPieces * sha1.Size
+		piecesIndex += nextPieceIndex
 	}
 
 	torrentInfo.Files = files
