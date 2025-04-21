@@ -3,18 +3,11 @@ package torrent
 import (
 	"bytes"
 	"crypto/sha1"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"math/rand"
-	"net"
-	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
@@ -182,52 +175,6 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 	}, nil
 }
 
-func getPeersOverUDP(t *Torrent) ([]Peer, error) {
-	parsedUrl, err := url.Parse(t.TrackerUrl)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse tracker URL: %w", err)
-	}
-
-	if scheme := parsedUrl.Scheme; scheme != "udp" {
-		return nil, fmt.Errorf("tracker scheme must be 'UDP' got '%s'", scheme)
-	}
-
-	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%s", parsedUrl.Host, parsedUrl.Port()))
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve tracker URL: %w", err)
-	}
-
-	conn, err := net.DialTimeout("udp", addr.String(), 5*time.Second)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to initiate connection with tracker: %w", err)
-	}
-
-	defer conn.Close()
-
-	transactionId := rand.Uint32()
-
-	// send connect message
-	connectionId, err := sendConnectRequest(conn, transactionId)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get list of peers: %w", err)
-	}
-
-	announceResponse, err := t.sendAnnounceRequest(conn, connectionId, transactionId)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get list of peers: %w", err)
-	}
-
-	// todo: parse peers from announce response
- 	fmt.Println(announceResponse)
-
-	return nil, nil
-}
-
 func (t *Torrent) DownloadMetadata() error {
 	if t.Info.Pieces != nil {
 		return nil
@@ -321,114 +268,4 @@ func NewTorrent(torrentFileOrMagnetLink string) (*Torrent, error) {
 	torrent, err = generateTorrentFromMagnetLink(torrentFileOrMagnetLink)
 
 	return torrent, err
-}
-
-func (t *Torrent) getTrackerUrlWithParams() string {
-	params := url.Values{}
-	length := t.Info.Length
-
-	if length == 0 {
-		// set length to a random value if the length of the torrent file is not known yet
-		length = 999
-	}
-
-	params.Add("info_hash", string(t.InfoHash[:]))
-	params.Add("peer_id", utils.GenerateRandomString(20, ""))
-	params.Add("port", "6881")
-	params.Add("downloaded", "0")
-	params.Add("uploaded", "0")
-	params.Add("left", strconv.Itoa(length))
-	params.Add("compact", "1")
-
-	queryString := params.Encode()
-
-	return fmt.Sprintf("%s?%s", t.TrackerUrl, queryString)
-}
-
-func (t *Torrent) parseTrackerResponse(res []byte) ([]Peer, error) {
-	decodedResponse, _, err := bencode.DecodeValue(res)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to decoded tracker response: %w", err)
-	}
-
-	dict, ok := decodedResponse.(map[string]any)
-
-	if !ok {
-		return nil, fmt.Errorf("decoded response type \"%T\" is invalid", decodedResponse)
-	}
-
-	if failureMsg, ok := dict["failure reason"].(string); ok {
-		return nil, fmt.Errorf("failed to get list of peers: %s", failureMsg)
-	}
-
-	if warningMsg, ok := dict["warning message"].(string); ok {
-		fmt.Println(warningMsg)
-	}
-
-	peers, exists := dict["peers"]
-
-	if !exists {
-		return nil, fmt.Errorf("decoded response does not include a \"peers\" key")
-	}
-
-	peersValue, ok := peers.(string)
-
-	if !ok {
-		return nil, fmt.Errorf("decoded value of \"peers\" is invalid. expected a string got %T", peers)
-	}
-
-	peersStringLen := len(peersValue)
-	peerSize := 6
-
-	if peersStringLen%peerSize != 0 {
-		return nil, fmt.Errorf("peers value must be a multiple of '%d' bytes", peerSize)
-	}
-
-	numOfPeers := peersStringLen / peerSize
-	peersArr := make([]Peer, numOfPeers)
-
-	for i, j := 0, 0; i < peersStringLen; i += peerSize {
-		IpAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
-		Port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
-		peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.InfoHash}
-		j++
-	}
-
-	return peersArr, nil
-}
-
-func (t *Torrent) GetPeers() ([]Peer, error) {
-	trackerUrl := t.getTrackerUrlWithParams()
-
-	req, err := http.NewRequest("GET", trackerUrl, nil)
-
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := http.DefaultClient.Do(req)
-
-	if err != nil {
-		return nil, err
-	}
-
-	defer res.Body.Close()
-	var trackerResponse []byte
-
-	if res.StatusCode == http.StatusOK {
-		trackerResponse, err = io.ReadAll(res.Body)
-
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	peers, err := t.parseTrackerResponse(trackerResponse)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return peers, nil
 }

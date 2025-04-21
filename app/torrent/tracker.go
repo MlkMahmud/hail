@@ -5,11 +5,248 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"net"
+	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
+	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
 	"github.com/codecrafters-io/bittorrent-starter-go/app/utils"
 )
+
+func (tr *Torrent) GetPeers() ([]Peer, error) {
+	parsedURL, err := url.Parse(tr.TrackerUrl)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tracker URL: %w", err)
+	}
+
+	switch parsedURL.Scheme {
+	case "http":
+		{
+			peers, err := tr.getPeersOverHTTP()
+			return peers, err
+		}
+
+	case "udp":
+		{
+			peers, err := tr.getPeersOverUDP()
+			return peers, err
+		}
+
+	default:
+		{
+			return nil, fmt.Errorf("tracker URL protocol must be one of 'HTTP' or 'UDP'")
+		}
+	}
+}
+
+func (t *Torrent) getPeersOverHTTP() ([]Peer, error) {
+	trackerUrl := t.getTrackerUrlWithParams()
+
+	req, err := http.NewRequest("GET", trackerUrl, nil)
+
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := http.DefaultClient.Do(req)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer res.Body.Close()
+	var trackerResponse []byte
+
+	if res.StatusCode == http.StatusOK {
+		trackerResponse, err = io.ReadAll(res.Body)
+
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	peers, err := t.parseHTTPAnnounceResponse(trackerResponse)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return peers, nil
+}
+
+func (tr *Torrent) getPeersOverUDP() ([]Peer, error) {
+	parsedUrl, err := url.Parse(tr.TrackerUrl)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tracker URL: %w", err)
+	}
+
+	if scheme := parsedUrl.Scheme; scheme != "udp" {
+		return nil, fmt.Errorf("tracker scheme must be 'UDP' got '%s'", scheme)
+	}
+
+	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%s", parsedUrl.Host, parsedUrl.Port()))
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve tracker URL: %w", err)
+	}
+
+	conn, err := net.DialTimeout("udp4", addr.String(), 5*time.Second)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to initiate connection with tracker: %w", err)
+	}
+
+	defer conn.Close()
+
+	transactionId := rand.Uint32()
+
+	// send connect message
+	connectionId, err := sendUDPConnectRequest(conn, transactionId)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get list of peers: %w", err)
+	}
+
+	announceResponse, err := tr.sendUDPAnnounceRequest(conn, connectionId, transactionId)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get list of peers: %w", err)
+	}
+
+	// todo: parse peers from announce response
+	fmt.Println(announceResponse)
+
+	return nil, nil
+}
+
+func (t *Torrent) getTrackerUrlWithParams() string {
+	params := url.Values{}
+	length := t.Info.Length
+
+	if length == 0 {
+		// set length to a random value if the length of the torrent file is not known yet
+		length = 999
+	}
+
+	params.Add("info_hash", string(t.InfoHash[:]))
+	params.Add("peer_id", utils.GenerateRandomString(20, ""))
+	params.Add("port", "6881")
+	params.Add("downloaded", "0")
+	params.Add("uploaded", "0")
+	params.Add("left", strconv.Itoa(length))
+	params.Add("compact", "1")
+
+	queryString := params.Encode()
+
+	return fmt.Sprintf("%s?%s", t.TrackerUrl, queryString)
+}
+
+func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
+	decodedResponse, _, err := bencode.DecodeValue(res)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to decoded tracker response: %w", err)
+	}
+
+	dict, ok := decodedResponse.(map[string]any)
+
+	if !ok {
+		return nil, fmt.Errorf("decoded response type \"%T\" is invalid", decodedResponse)
+	}
+
+	if failureMsg, ok := dict["failure reason"].(string); ok {
+		return nil, fmt.Errorf("failed to get list of peers: %s", failureMsg)
+	}
+
+	if warningMsg, ok := dict["warning message"].(string); ok {
+		fmt.Println(warningMsg)
+	}
+
+	peers, exists := dict["peers"]
+
+	if !exists {
+		return nil, fmt.Errorf("decoded response does not include a \"peers\" key")
+	}
+
+	peersValue, ok := peers.(string)
+
+	if !ok {
+		return nil, fmt.Errorf("decoded value of \"peers\" is invalid. expected a string got %T", peers)
+	}
+
+	peersStringLen := len(peersValue)
+	peerSize := 6
+
+	if peersStringLen%peerSize != 0 {
+		return nil, fmt.Errorf("peers value must be a multiple of '%d' bytes", peerSize)
+	}
+
+	numOfPeers := peersStringLen / peerSize
+	peersArr := make([]Peer, numOfPeers)
+
+	for i, j := 0, 0; i < peersStringLen; i += peerSize {
+		IpAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
+		Port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
+		peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.InfoHash}
+		j++
+	}
+
+	return peersArr, nil
+}
+
+/*
+IPv4 announce response:
+
+	Offset      Size            Name            Value
+	0           32-bit integer  action          1 // announce
+	4           32-bit integer  transaction_id
+	8           32-bit integer  interval
+	12          32-bit integer  leechers
+	16          32-bit integer  seeders
+	20 + 6 * n  32-bit integer  IP address
+	24 + 6 * n  16-bit integer  TCP port
+	20 + 6 * N
+*/
+func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, transactionId uint32) ([]Peer, error) {
+	minSize := 20
+	peerSize := 6
+
+	if receivedSize := len(response); receivedSize < minSize {
+		return nil, fmt.Errorf("'announce' response should contain at least %d bytes", minSize)
+	}
+
+	if receivedAction := binary.BigEndian.Uint32(response); receivedAction != action {
+		return nil, fmt.Errorf("received action value '%d' does not match expected value '%d'", receivedAction, action)
+	}
+
+	if receivedTransactionId := binary.BigEndian.Uint32(response[4:]); receivedTransactionId != transactionId {
+		return nil, fmt.Errorf("received transaction_id '%d' does not match expected value '%d'", receivedTransactionId, transactionId)
+	}
+
+	peersBuffer := response[minSize : minSize+1]
+	peersBufferSize := len(peersBuffer)
+
+	if peersBufferSize%peerSize != 0 {
+		return nil, fmt.Errorf("peers list must be a multiple of '%d'", peerSize)
+	}
+
+	numOfPeers := peersBufferSize / peerSize
+	peersArr := make([]Peer, numOfPeers)
+
+	for i, j := 0, 0; i < peersBufferSize; i += peerSize {
+		ipAddresss := fmt.Sprintf("%d.%d.%d.%d", peersBuffer[i], peersBuffer[i+1], peersBuffer[i+2], peersBuffer[i+3])
+		port := binary.BigEndian.Uint16(peersBuffer[i+4:])
+		peersArr[j] = Peer{InfoHash: tr.InfoHash, IpAddress: ipAddresss, Port: port}
+		j++
+	}
+
+	return peersArr, nil
+}
 
 /*
 Announce Request
@@ -35,7 +272,7 @@ Announce Request
 	96      16-bit integer  port
 	98
 */
-func (tr *Torrent) sendAnnounceRequest(conn net.Conn, connectionId uint64, transactionId uint32) ([]byte, error) {
+func (tr *Torrent) sendUDPAnnounceRequest(conn net.Conn, connectionId uint64, transactionId uint32) ([]Peer, error) {
 	action := uint32(1)
 	peerId := utils.GenerateRandomString(20, "")
 	port := uint16(6881)
@@ -79,9 +316,9 @@ func (tr *Torrent) sendAnnounceRequest(conn net.Conn, connectionId uint64, trans
 
 	binary.BigEndian.PutUint16(reqBuffer[index:], port)
 
-	response, err := utils.Retry(utils.RetryOptions[[]byte]{
+	response, err := utils.Retry(utils.RetryOptions[[]Peer]{
 		Delay: 3 * time.Second,
-		Operation: func() ([]byte, error) {
+		Operation: func() ([]Peer, error) {
 			defer func() {
 				attempts += 1
 			}()
@@ -102,19 +339,9 @@ func (tr *Torrent) sendAnnounceRequest(conn net.Conn, connectionId uint64, trans
 				return nil, fmt.Errorf("failed to receive 'announce' response from tracker: %w", err)
 			}
 
-			if expectedSize, receivedSize := 0, len(resBuffer); receivedSize != expectedSize {
-				return nil, fmt.Errorf("'announce' response should contain at least '%d", expectedSize)
-			}
+			peers, err := tr.parseUDPAnnounceResponse(resBuffer, action, transactionId)
 
-			if receivedAction := binary.BigEndian.Uint32(resBuffer); receivedAction != action {
-				return nil, fmt.Errorf("received action value '%d' does not match expected value '%d'", receivedAction, action)
-			}
-
-			if receivedTransactionId := binary.BigEndian.Uint32(resBuffer[4:]); receivedTransactionId != transactionId {
-				return nil, fmt.Errorf("received transaction_id '%d' does not match expected value '%d'", receivedTransactionId, transactionId)
-			}
-
-			return resBuffer, nil
+			return peers, err
 		},
 		MaxAttemps: 3,
 	})
@@ -123,14 +350,15 @@ func (tr *Torrent) sendAnnounceRequest(conn net.Conn, connectionId uint64, trans
 }
 
 /*
-	connect request:
-		Offset  Size            Name            Value
-		0       64-bit integer  protocol_id     0x41727101980 // magic constant
-		8       32-bit integer  action          0 // connect
-		12      32-bit integer  transaction_id
-		16
-	*/
-func sendConnectRequest(conn net.Conn, transactionId uint32) (uint64, error) {
+connect request:
+
+	Offset  Size            Name            Value
+	0       64-bit integer  protocol_id     0x41727101980 // magic constant
+	8       32-bit integer  action          0 // connect
+	12      32-bit integer  transaction_id
+	16
+*/
+func sendUDPConnectRequest(conn net.Conn, transactionId uint32) (uint64, error) {
 	action := uint32(0)
 	connectRequestSize := 16
 	reqBuffer := make([]byte, connectRequestSize)
