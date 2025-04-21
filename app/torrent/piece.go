@@ -30,38 +30,57 @@ type Piece struct {
 }
 
 type piecesParserConfig struct {
-	fileLength   int
-	pieceLength  int
-	piecesHashes string
+	fileLength         int
+	initialPieceOffset int
+	pieceLength        int
+	piecesHashes       string
+}
+
+type piecesParserResult struct {
+	nextFileStartOffset int
+	nextPieceStartIndex int
+	pieces              []Piece
 }
 
 const (
 	BlockSize = 16384
 )
 
-func parsePiecesHashes(config piecesParserConfig) ([]Piece, int, error) {
+func parsePiecesHashes(config piecesParserConfig) (piecesParserResult, error) {
+	result := piecesParserResult{
+		nextFileStartOffset: 0,
+		nextPieceStartIndex: 0,
+		pieces:              nil,
+	}
+
 	availablePiecesLen := len(config.piecesHashes)
 	numOfPieces := int(math.Ceil(float64(config.fileLength) / float64(config.pieceLength)))
 	piecesArr := make([]Piece, numOfPieces)
 	piecesIndex := 0
 
 	if availablePiecesLen%sha1.Size != 0 {
-		return nil, 0, fmt.Errorf("pieces length must be a multiple of %d", sha1.Size)
+		return result, fmt.Errorf("pieces length must be a multiple of %d", sha1.Size)
 	}
 
 	if numOfAvailablePieces := availablePiecesLen / sha1.Size; numOfAvailablePieces < numOfPieces {
-		return nil, 0, fmt.Errorf("expected pieces hash to contain at least %d pieces, but got %d", numOfPieces, numOfAvailablePieces)
+		return result, fmt.Errorf("expected pieces hash to contain at least %d pieces, but got %d", numOfPieces, numOfAvailablePieces)
 	}
 
 	for i := range numOfPieces {
 		pieceHash := []byte(config.piecesHashes[piecesIndex : sha1.Size+piecesIndex])
 
 		if len(pieceHash) != sha1.Size {
-			return nil, 0, fmt.Errorf("piece %d has an invalid hash", i)
+			return result, fmt.Errorf("piece %d has an invalid hash", i)
 		}
 
 		piece := Piece{Index: i, Hash: [sha1.Size]byte(pieceHash)}
+
+		isFirstPiece := i == 0
 		isLastPiece := i == (numOfPieces - 1)
+
+		if isFirstPiece {
+			piece.Offset = config.initialPieceOffset
+		}
 
 		/*
 			All pieces have the same fixed length, except the last piece which may be truncated.
@@ -73,15 +92,27 @@ func parsePiecesHashes(config piecesParserConfig) ([]Piece, int, error) {
 			piece.Length = config.pieceLength
 		}
 
-		// If it's not a truncated piece advance the pieces hash index
+		// If it's not a truncated piece advance the pieces hash index and set the start offset for the next file to 0.
 		if piece.Length == config.pieceLength {
 			piecesIndex += sha1.Size
+			result.nextFileStartOffset = 0
+		} else {
+			/*
+				In multi-file torrents a single piece can contain data for two files.
+				If the last piece of a file is truncated, then that piece includes data
+				for the next file too. We need to calculate the offset to know exactly at which
+				byte the data for the next file begins.
+			*/
+			result.nextFileStartOffset = piece.Length
 		}
 
 		piecesArr[i] = piece
 	}
 
-	return piecesArr, piecesIndex, nil
+	result.nextPieceStartIndex = piecesIndex
+	result.pieces = piecesArr
+
+	return result, nil
 
 }
 

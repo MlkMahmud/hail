@@ -219,10 +219,11 @@ func parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 		return torrentInfo, fmt.Errorf("'length' property of metainfo info dictionary must be an integer not %T", fileLength)
 	}
 
-	pieces, _, err := parsePiecesHashes(piecesParserConfig{
-		fileLength:   fileLength,
-		pieceLength:  infoDict["piece length"].(int),
-		piecesHashes: infoDict["pieces"].(string),
+	result, err := parsePiecesHashes(piecesParserConfig{
+		fileLength:         fileLength,
+		initialPieceOffset: 0,
+		pieceLength:        infoDict["piece length"].(int),
+		piecesHashes:       infoDict["pieces"].(string),
 	})
 
 	if err != nil {
@@ -232,7 +233,7 @@ func parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 	files := []File{{
 		Length: fileLength,
 		Name:   infoDict["name"].(string),
-		Pieces: pieces,
+		Pieces: result.pieces,
 	}}
 
 	return TorrentInfo{
@@ -255,7 +256,10 @@ func parseMultiFileTorrent(infoDict map[string]any) (TorrentInfo, error) {
 	pieceLength := infoDict["piece length"].(int)
 	pieces := infoDict["pieces"].(string)
 
-	for i, piecesIndex := 0, 0; i < numOfFiles; i++ {
+	nextFileStartOffset := 0
+	piecesIndex := 0
+
+	for i := 0; i < numOfFiles; i++ {
 		file, ok := fileslist[i].(map[string]any)
 
 		if !ok {
@@ -283,10 +287,11 @@ func parseMultiFileTorrent(infoDict map[string]any) (TorrentInfo, error) {
 		fileLength := file["length"].(int)
 		path := filepath.Join(pathList...)
 
-		pieces, nextPieceIndex, err := parsePiecesHashes(piecesParserConfig{
-			fileLength:   fileLength,
-			pieceLength:  pieceLength,
-			piecesHashes: pieces[piecesIndex:],
+		result, err := parsePiecesHashes(piecesParserConfig{
+			fileLength:         fileLength,
+			initialPieceOffset: nextFileStartOffset,
+			pieceLength:        pieceLength,
+			piecesHashes:       pieces[piecesIndex:],
 		})
 
 		if err != nil {
@@ -296,10 +301,11 @@ func parseMultiFileTorrent(infoDict map[string]any) (TorrentInfo, error) {
 		files[i] = File{
 			Length: fileLength,
 			Name:   filepath.Join(infoDict["name"].(string), path),
-			Pieces: pieces,
+			Pieces: result.pieces,
 		}
 
-		piecesIndex += nextPieceIndex
+		nextFileStartOffset = result.nextFileStartOffset
+		piecesIndex += result.nextPieceStartIndex
 	}
 
 	torrentInfo.Files = files
