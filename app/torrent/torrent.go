@@ -122,7 +122,7 @@ func generateTorrentFromFile(src string) (*Torrent, error) {
 	torrentInfo, err := parseInfoDict(metainfo["info"].(map[string]any))
 
 	if err != nil {
-		return torrent, fmt.Errorf("failed to parse metainfo: %w", err)
+		return torrent, fmt.Errorf("failed to parse metainfo 'info' dictionary %w", err)
 	}
 
 	bencodedValue, err := bencode.EncodeValue(metainfo["info"])
