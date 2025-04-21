@@ -5,8 +5,11 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/codecrafters-io/bittorrent-starter-go/app/bencode"
@@ -20,7 +23,14 @@ type Peer struct {
 	Port      uint16
 }
 
+type File struct {
+	Length int
+	Name   string
+	Pieces []Piece
+}
+
 type TorrentInfo struct {
+	Files  []File
 	Length int     `mapstructure:"length"`
 	Name   string  `mapstructure:"name"`
 	Pieces []Piece `mapstructure:"-"`
@@ -75,54 +85,57 @@ func getInfoHashFromQueryString(queryString string) (*[sha1.Size]byte, error) {
 	return &infoHash, nil
 }
 
-func generateTorrentFromFile(torrentFilepath string) (*Torrent, error) {
-	fileContent, err := os.ReadFile(torrentFilepath)
+func generateTorrentFromFile(src string) (*Torrent, error) {
+	var torrent *Torrent
+
+	content, err := os.ReadFile(src)
 
 	if err != nil {
-		return nil, err
+		return torrent, fmt.Errorf("failed to read metainfo file: %w", err)
 	}
 
-	decodedValue, _, err := bencode.DecodeValue(fileContent)
+	decodedValue, _, err := bencode.DecodeValue(content)
 
 	if err != nil {
-		return nil, err
+		return torrent, fmt.Errorf("failed to decode metainfo file: %w", err)
 	}
 
-	trrntDict, ok := decodedValue.(map[string]any)
+	metainfo, ok := decodedValue.(map[string]any)
 
 	if !ok {
-		return nil, fmt.Errorf("expected decoded object to be a dict got %T", decodedValue)
+		return torrent, fmt.Errorf("expected metainfo to be a bencoded dictionary, but received '%T'", metainfo)
 	}
 
-	var torrent Torrent
+	for key, value := range map[string]any{"announce": "string", "info": make(map[string]any)} {
+		if _, exists := metainfo[key]; !exists {
+			return torrent, fmt.Errorf("metainfo dictionary is missing required property '%s'", key)
+		}
 
-	if err := mapstructure.Decode(trrntDict, &torrent); err != nil {
-		return nil, err
+		expectedType := reflect.TypeOf(value)
+		receivedType := reflect.TypeOf(metainfo[key])
+
+		if receivedType != expectedType {
+			return torrent, fmt.Errorf("expected the '%s' property to be of type '%v', but received '%v'", key, expectedType, receivedType)
+		}
 	}
 
-	infoDict, ok := trrntDict["info"].(map[string]any)
-
-	if !ok {
-		return nil, fmt.Errorf("expected the 'info' property of the metainfo dict to be a dict, but got %T", infoDict)
-	}
-
-	encodedValue, err := bencode.EncodeValue(infoDict)
+	torrentInfo, err := parseInfoDict(metainfo["info"].(map[string]any))
 
 	if err != nil {
-		return nil, err
+		return torrent, fmt.Errorf("failed to parse metainfo: %w", err)
 	}
 
-	torrent.InfoHash = sha1.Sum([]byte(encodedValue))
-
-	pieces, err := parseTorrentPieces(infoDict)
+	bencodedValue, err := bencode.EncodeValue(metainfo["info"])
 
 	if err != nil {
-		return nil, err
+		return torrent, fmt.Errorf("failed to encode metainfo 'info' dictionary")
 	}
 
-	torrent.Info.Pieces = pieces
-
-	return &torrent, nil
+	return &Torrent{
+		Info:       torrentInfo,
+		InfoHash:   sha1.Sum([]byte(bencodedValue)),
+		TrackerUrl: metainfo["announce"].(string),
+	}, nil
 }
 
 func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
@@ -173,6 +186,119 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 		InfoHash:   *infoHash,
 		TrackerUrl: params["tr"][0],
 	}, nil
+}
+
+func parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
+	var torrentInfo TorrentInfo
+
+	for key, value := range map[string]any{"name": "", "piece length": 0, "pieces": ""} {
+		if _, exists := infoDict[key]; !exists {
+			return torrentInfo, fmt.Errorf("metainfo 'info' dictionary is missing required property '%s'", key)
+		}
+
+		expectedType := reflect.TypeOf(value)
+		receivedType := reflect.TypeOf(infoDict[key])
+
+		if receivedType != expectedType {
+			return torrentInfo, fmt.Errorf("expected the '%s' property to be of type '%v', but received '%v'", key, expectedType, receivedType)
+		}
+	}
+
+	if _, ok := infoDict["files"]; ok {
+		info, err := parseMultiFileTorrent(infoDict)
+
+		return info, err
+	}
+
+	if _, ok := infoDict["length"]; !ok {
+		return torrentInfo, fmt.Errorf("metainfo 'info' dictionary must contain a 'files' or 'length' property")
+	}
+
+	length, ok := infoDict["length"].(int)
+
+	if !ok {
+		return torrentInfo, fmt.Errorf("'length' property of metainfo info dictionary must be an integer not %T", length)
+	}
+
+	pieces, err := parsePieces(length, infoDict["pieces"].(string), infoDict["piece length"].(int))
+
+	if err != nil {
+		return torrentInfo, err
+	}
+
+	files := []File{{
+		Length: length,
+		Name:   infoDict["name"].(string),
+		Pieces: pieces,
+	}}
+
+	torrentInfo.Files = files
+	return torrentInfo, nil
+}
+
+func parseMultiFileTorrent(infoDict map[string]any) (TorrentInfo, error) {
+	var torrentInfo TorrentInfo
+
+	fileslist, ok := infoDict["files"].([]any)
+
+	if !ok {
+		return torrentInfo, fmt.Errorf("expected 'files' property to be a list, but received '%T'", fileslist)
+	}
+
+	numOfFiles := len(fileslist)
+	files := make([]File, numOfFiles)
+
+	pieceLength := infoDict["piece length"].(int)
+	pieces := infoDict["pieces"].(string)
+
+	for i, piecesIndex := 0, 0; i < numOfFiles; i++ {
+		file, ok := fileslist[i].(map[string]any)
+
+		if !ok {
+			return torrentInfo, fmt.Errorf("filelist contains an invalid entry at index '%d'", i)
+		}
+
+		if _, ok := file["length"].(int); !ok {
+			return torrentInfo, fmt.Errorf("filelist entry at index '%d' contains an invalid 'length' property", i)
+		}
+
+		if _, ok := file["path"].([]any); !ok {
+			return torrentInfo, fmt.Errorf("filelist entry at index '%d' contains an invalid 'path' property", i)
+		}
+
+		pathList := make([]string, len(file["path"].([]any)))
+
+		for index, entry := range file["path"].([]any) {
+			if _, ok := entry.(string); !ok {
+				return torrentInfo, fmt.Errorf("filelist entry at index '%d' contains an invalid 'path' property", i)
+			}
+
+			pathList[index] = entry.(string)
+		}
+
+		length := file["length"].(int)
+		path := filepath.Join(pathList...)
+		remainingPieces := pieces[piecesIndex:]
+		requiredNumOfPieces := int(math.Ceil(float64(length) / float64(pieceLength)))
+
+		pieces, err := parsePieces(length, remainingPieces, pieceLength)
+
+		if err != nil {
+			return torrentInfo, fmt.Errorf("failed to parse filelist entry at index '%d': %w", i, err)
+		}
+
+		files[i] = File{
+			Length: length,
+			Name:   filepath.Join(infoDict["name"].(string), path),
+			Pieces: pieces,
+		}
+
+		piecesIndex += requiredNumOfPieces * sha1.Size
+	}
+
+	torrentInfo.Files = files
+
+	return torrentInfo, nil
 }
 
 func (t *Torrent) DownloadMetadata() error {
