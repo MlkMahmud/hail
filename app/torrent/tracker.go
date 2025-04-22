@@ -89,7 +89,7 @@ func (tr *Torrent) getPeersOverUDP() ([]Peer, error) {
 		return nil, fmt.Errorf("tracker scheme must be 'UDP' got '%s'", scheme)
 	}
 
-	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%s", parsedUrl.Host, parsedUrl.Port()))
+	addr, err := net.ResolveUDPAddr("udp4", parsedUrl.Host)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve tracker URL: %w", err)

@@ -16,6 +16,17 @@ import (
 	"github.com/mitchellh/mapstructure"
 )
 
+type File struct {
+	torrent *Torrent
+
+	Length int
+	Name   string
+	Offset int
+
+	pieceEndIndex   int
+	pieceStartIndex int
+}
+
 type Peer struct {
 	InfoHash  [sha1.Size]byte
 	IpAddress string
@@ -78,7 +89,7 @@ func getInfoHashFromQueryString(queryString string) (*[sha1.Size]byte, error) {
 	return &infoHash, nil
 }
 
-func generateTorrentFromFile(src string) (*Torrent, error) {
+func parseTorrentFile(src string) (*Torrent, error) {
 	torrent := new(Torrent)
 
 	content, err := os.ReadFile(src)
@@ -131,22 +142,12 @@ func generateTorrentFromFile(src string) (*Torrent, error) {
 	return torrent, nil
 }
 
-func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
-	if len(magnetLink) == 0 {
-		return nil, fmt.Errorf("magnet link cannot be an empty string")
-	}
-
-	parsedUrl, err := url.Parse(magnetLink)
-
-	if err != nil {
-		return nil, err
-	}
-
-	if parsedUrl.Scheme != "magnet" {
+func parseMagnetURL(magnetURL *url.URL) (*Torrent, error) {
+	if magnetURL.Scheme != "magnet" {
 		return nil, fmt.Errorf("magnet link URI is invalid")
 	}
 
-	params, err := url.ParseQuery(parsedUrl.RawQuery)
+	params, err := url.ParseQuery(magnetURL.RawQuery)
 
 	if err != nil {
 		return nil, err
@@ -230,14 +231,14 @@ func (tr *Torrent) parseFilesList(infoDict map[string]any) (TorrentInfo, error) 
 		fileLength := file["length"].(int)
 		path := filepath.Join(pathList...)
 
-		result, err := parsePiecesHashes(fileLength, pieceLength, pieces[piecesIndex:])
+		pieceStartIndex := piecesIndex / sha1.Size
+		pieceEndIndex := pieceStartIndex + (fileLength / pieceLength)
+
+		result, err := parsePiecesHashes(fileLength, pieceLength, pieceStartIndex, pieces[piecesIndex:])
 
 		if err != nil {
 			return torrentInfo, fmt.Errorf("failed to parse files list entry at index '%d': %w", i, err)
 		}
-
-		pieceStartIndex := piecesIndex / sha1.Size
-		pieceEndIndex := pieceStartIndex + (fileLength / pieceLength)
 
 		files[i] = File{
 			torrent:         tr,
@@ -301,9 +302,10 @@ func (tr *Torrent) parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 	}
 
 	pieceLength := infoDict["piece length"].(int)
+	pieceOffset := 0
 	piecesHashes := infoDict["pieces"].(string)
 
-	result, err := parsePiecesHashes(fileLength, pieceLength, piecesHashes)
+	result, err := parsePiecesHashes(fileLength, pieceLength, pieceOffset, piecesHashes)
 
 	if err != nil {
 		return torrentInfo, fmt.Errorf("failed to parse pieces hashes: %w", err)
@@ -404,17 +406,22 @@ func (t *Torrent) DownloadMetadata() error {
 	return nil
 }
 
-func NewTorrent(torrentFileOrMagnetLink string) (*Torrent, error) {
+func NewTorrent(src string) (*Torrent, error) {
 	var torrent *Torrent
 	var err error
 
-	if utils.CheckIfFileExists(torrentFileOrMagnetLink) {
-		torrent, err = generateTorrentFromFile(torrentFileOrMagnetLink)
-
+	if utils.CheckIfFileExists(src) {
+		torrent, err = parseTorrentFile(src)
 		return torrent, err
 	}
 
-	torrent, err = generateTorrentFromMagnetLink(torrentFileOrMagnetLink)
+	url, err := url.Parse(src) 
+	
+	if err != nil {
+		return nil, fmt.Errorf("torrent src must be a path to '.torrent' file or a magnet URL")
+	}
+
+	torrent, err = parseMagnetURL(url)
 
 	return torrent, err
 }

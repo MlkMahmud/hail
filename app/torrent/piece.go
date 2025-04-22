@@ -10,9 +10,9 @@ import (
 )
 
 type Block struct {
-	Begin     int
-	Data      []byte
-	Length    int
+	Begin      int
+	Data       []byte
+	Length     int
 	PieceIndex int
 }
 
@@ -26,10 +26,10 @@ type Piece struct {
 	Index  int
 	Hash   [sha1.Size]byte
 	Length int
-	Offset int
 }
+
 type piecesParserResult struct {
-	nextFileOffset int
+	nextFileOffset      int
 	nextPieceStartIndex int
 	pieces              []Piece
 }
@@ -38,9 +38,9 @@ const (
 	BlockSize = 16384
 )
 
-func parsePiecesHashes(fileLength int, pieceLength int, piecesHashes string) (piecesParserResult, error) {
+func parsePiecesHashes(fileLength int, pieceLength int, pieceOffset int, piecesHashes string) (piecesParserResult, error) {
 	result := piecesParserResult{
-		nextFileOffset: 0,
+		nextFileOffset:      0,
 		nextPieceStartIndex: 0,
 		pieces:              nil,
 	}
@@ -65,7 +65,7 @@ func parsePiecesHashes(fileLength int, pieceLength int, piecesHashes string) (pi
 			return result, fmt.Errorf("piece %d has an invalid hash", i)
 		}
 
-		piece := Piece{Index: i, Hash: [sha1.Size]byte(pieceHash)}
+		piece := Piece{Index: i + pieceOffset, Hash: [sha1.Size]byte(pieceHash)}
 		isLastPiece := i == (numOfPieces - 1)
 
 		/*
