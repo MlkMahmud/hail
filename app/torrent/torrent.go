@@ -153,7 +153,7 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 	}
 
 	if infoHashParam, ok := params["xt"]; !ok || len(infoHashParam) != 1 {
-		return nil, fmt.Errorf("magnet link must include an 'xt' (info hash) paramater")
+		return nil, fmt.Errorf("magnet link must include an 'xt' (info hash) parameter")
 	}
 
 	if trackerParam, ok := params["tr"]; !ok || len(trackerParam) == 0 {
