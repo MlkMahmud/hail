@@ -22,12 +22,6 @@ type Peer struct {
 	Port      uint16
 }
 
-type File struct {
-	Length int
-	Name   string
-	Pieces []Piece
-}
-
 type TorrentInfo struct {
 	Files  []File
 	Length int     `mapstructure:"length"`
@@ -85,7 +79,7 @@ func getInfoHashFromQueryString(queryString string) (*[sha1.Size]byte, error) {
 }
 
 func generateTorrentFromFile(src string) (*Torrent, error) {
-	var torrent *Torrent
+	torrent := new(Torrent)
 
 	content, err := os.ReadFile(src)
 
@@ -118,7 +112,7 @@ func generateTorrentFromFile(src string) (*Torrent, error) {
 		}
 	}
 
-	torrentInfo, err := parseInfoDict(metainfo["info"].(map[string]any))
+	torrentInfo, err := torrent.parseInfoDict(metainfo["info"].(map[string]any))
 
 	if err != nil {
 		return torrent, fmt.Errorf("failed to parse metainfo 'info' dictionary %w", err)
@@ -130,11 +124,11 @@ func generateTorrentFromFile(src string) (*Torrent, error) {
 		return torrent, fmt.Errorf("failed to encode metainfo 'info' dictionary")
 	}
 
-	return &Torrent{
-		Info:       torrentInfo,
-		InfoHash:   sha1.Sum([]byte(bencodedValue)),
-		TrackerUrl: metainfo["announce"].(string),
-	}, nil
+	torrent.Info = torrentInfo
+	torrent.InfoHash = sha1.Sum([]byte(bencodedValue))
+	torrent.TrackerUrl = metainfo["announce"].(string)
+
+	return torrent, nil
 }
 
 func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
@@ -187,7 +181,93 @@ func generateTorrentFromMagnetLink(magnetLink string) (*Torrent, error) {
 	}, nil
 }
 
-func parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
+func (tr *Torrent) parseFilesList(infoDict map[string]any) (TorrentInfo, error) {
+	var torrentInfo TorrentInfo
+
+	filesList, ok := infoDict["files"].([]any)
+
+	if !ok {
+		return torrentInfo, fmt.Errorf("expected 'files' property to be a list, but received '%T'", filesList)
+	}
+
+	numOfFiles := len(filesList)
+	files := make([]File, numOfFiles)
+
+	pieceLength := infoDict["piece length"].(int)
+	pieces := infoDict["pieces"].(string)
+	piecesArr := []Piece{}
+
+	fileOffset := 0
+	piecesIndex := 0
+
+	for i := range numOfFiles {
+		file, ok := filesList[i].(map[string]any)
+		isLastFile := i == (numOfFiles - 1)
+
+		if !ok {
+			return torrentInfo, fmt.Errorf("files list contains an invalid entry at index '%d'", i)
+		}
+
+		if _, ok := file["length"].(int); !ok {
+			return torrentInfo, fmt.Errorf("files list entry at index '%d' contains an invalid 'length' property", i)
+		}
+
+		if _, ok := file["path"].([]any); !ok {
+			return torrentInfo, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property", i)
+		}
+
+		pathList := make([]string, len(file["path"].([]any)))
+
+		for index, entry := range file["path"].([]any) {
+			if _, ok := entry.(string); !ok {
+				return torrentInfo, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property", i)
+			}
+
+			pathList[index] = entry.(string)
+		}
+
+		fileLength := file["length"].(int)
+		path := filepath.Join(pathList...)
+
+		result, err := parsePiecesHashes(fileLength, pieceLength, pieces[piecesIndex:])
+
+		if err != nil {
+			return torrentInfo, fmt.Errorf("failed to parse files list entry at index '%d': %w", i, err)
+		}
+
+		pieceStartIndex := piecesIndex / sha1.Size
+		pieceEndIndex := pieceStartIndex + (fileLength / pieceLength)
+
+		files[i] = File{
+			torrent: tr,
+			Length:          fileLength,
+			Name:            filepath.Join(infoDict["name"].(string), path),
+			Offset:          fileOffset,
+			pieceEndIndex:   pieceEndIndex,
+			pieceStartIndex: pieceStartIndex,
+		}
+		/*
+			If the offset for the next file is not '0' it means the final piece for this file was truncated.
+			Given this assertion, we can copy all the parsed pieces except the last piece, seeing as it will be copied
+			as the first piece from the next file.
+		*/
+		if result.nextFileOffset != 0 && !isLastFile {
+			piecesArr = append(piecesArr, result.pieces[:len(result.pieces)-1]...)
+		} else {
+			piecesArr = append(piecesArr, result.pieces...)
+		}
+
+		fileOffset = result.nextFileOffset
+		piecesIndex += result.nextPieceStartIndex
+	}
+
+	torrentInfo.Files = files
+	torrentInfo.Pieces = piecesArr
+
+	return torrentInfo, nil
+}
+
+func (tr *Torrent) parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 	var torrentInfo TorrentInfo
 
 	for key, value := range map[string]any{"name": "", "piece length": 0, "pieces": ""} {
@@ -204,7 +284,7 @@ func parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 	}
 
 	if _, ok := infoDict["files"]; ok {
-		info, err := parseMultiFileTorrent(infoDict)
+		info, err := tr.parseFilesList(infoDict)
 
 		return info, err
 	}
@@ -219,98 +299,28 @@ func parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 		return torrentInfo, fmt.Errorf("'length' property of metainfo info dictionary must be an integer not %T", fileLength)
 	}
 
-	result, err := parsePiecesHashes(piecesParserConfig{
-		fileLength:         fileLength,
-		initialPieceOffset: 0,
-		pieceLength:        infoDict["piece length"].(int),
-		piecesHashes:       infoDict["pieces"].(string),
-	})
+	pieceLength := infoDict["piece length"].(int)
+	piecesHashes := infoDict["pieces"].(string)
+
+	result, err := parsePiecesHashes(fileLength, pieceLength, piecesHashes)
 
 	if err != nil {
 		return torrentInfo, fmt.Errorf("failed to parse pieces hashes: %w", err)
 	}
 
 	files := []File{{
-		Length: fileLength,
-		Name:   infoDict["name"].(string),
-		Pieces: result.pieces,
+		torrent: tr,
+		Length:          fileLength,
+		Name:            infoDict["name"].(string),
+		Offset:          0,
+		pieceEndIndex:   fileLength / pieceLength,
+		pieceStartIndex: 0,
 	}}
 
 	return TorrentInfo{
-		Files: files,
+		Files:  files,
+		Pieces: result.pieces,
 	}, nil
-}
-
-func parseMultiFileTorrent(infoDict map[string]any) (TorrentInfo, error) {
-	var torrentInfo TorrentInfo
-
-	fileslist, ok := infoDict["files"].([]any)
-
-	if !ok {
-		return torrentInfo, fmt.Errorf("expected 'files' property to be a list, but received '%T'", fileslist)
-	}
-
-	numOfFiles := len(fileslist)
-	files := make([]File, numOfFiles)
-
-	pieceLength := infoDict["piece length"].(int)
-	pieces := infoDict["pieces"].(string)
-
-	nextFileStartOffset := 0
-	piecesIndex := 0
-
-	for i := 0; i < numOfFiles; i++ {
-		file, ok := fileslist[i].(map[string]any)
-
-		if !ok {
-			return torrentInfo, fmt.Errorf("filelist contains an invalid entry at index '%d'", i)
-		}
-
-		if _, ok := file["length"].(int); !ok {
-			return torrentInfo, fmt.Errorf("filelist entry at index '%d' contains an invalid 'length' property", i)
-		}
-
-		if _, ok := file["path"].([]any); !ok {
-			return torrentInfo, fmt.Errorf("filelist entry at index '%d' contains an invalid 'path' property", i)
-		}
-
-		pathList := make([]string, len(file["path"].([]any)))
-
-		for index, entry := range file["path"].([]any) {
-			if _, ok := entry.(string); !ok {
-				return torrentInfo, fmt.Errorf("filelist entry at index '%d' contains an invalid 'path' property", i)
-			}
-
-			pathList[index] = entry.(string)
-		}
-
-		fileLength := file["length"].(int)
-		path := filepath.Join(pathList...)
-
-		result, err := parsePiecesHashes(piecesParserConfig{
-			fileLength:         fileLength,
-			initialPieceOffset: nextFileStartOffset,
-			pieceLength:        pieceLength,
-			piecesHashes:       pieces[piecesIndex:],
-		})
-
-		if err != nil {
-			return torrentInfo, fmt.Errorf("failed to parse filelist entry at index '%d': %w", i, err)
-		}
-
-		files[i] = File{
-			Length: fileLength,
-			Name:   filepath.Join(infoDict["name"].(string), path),
-			Pieces: result.pieces,
-		}
-
-		nextFileStartOffset = result.nextFileStartOffset
-		piecesIndex += result.nextPieceStartIndex
-	}
-
-	torrentInfo.Files = files
-
-	return torrentInfo, nil
 }
 
 func (t *Torrent) DownloadMetadata() error {

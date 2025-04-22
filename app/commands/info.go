@@ -30,9 +30,6 @@ func HandleInfoCommand(ctx *cli.Context) error {
 
 	for _, file := range trrnt.Info.Files {
 		fmt.Printf("Name: %s\n", file.Name)
-		fmt.Printf("Pieces size: %d\n", len(file.Pieces))
-		fmt.Printf("Piece Offset: %d\n", file.Pieces[0].Offset)
-
 	}
 
 	return nil

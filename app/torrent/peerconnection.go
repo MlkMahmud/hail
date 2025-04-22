@@ -75,7 +75,7 @@ func generateBlockRequestPayload(block Block) []byte {
 
 	index := 0
 
-	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.PiceIndex))
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.PieceIndex))
 	index += blockIndexSize
 
 	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.Begin))
@@ -195,7 +195,7 @@ func (p *PeerConnection) downloadBlock(block Block, resultsQueue chan<- BlockReq
 			Begin:     int(blockPieceOffset),
 			Data:      blockData,
 			Length:    len(blockData),
-			PiceIndex: int(blockPieceIndex),
+			PieceIndex: int(blockPieceIndex),
 		}
 
 		break
