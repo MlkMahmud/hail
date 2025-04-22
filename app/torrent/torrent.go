@@ -216,9 +216,10 @@ func (tr *Torrent) parseFilesList(infoDict map[string]any) (TorrentInfo, error) 
 			return torrentInfo, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property", i)
 		}
 
-		pathList := make([]string, len(file["path"].([]any)))
+		paths := file["path"].([]any)
+		pathList := make([]string, len(paths))
 
-		for index, entry := range file["path"].([]any) {
+		for index, entry := range paths {
 			if _, ok := entry.(string); !ok {
 				return torrentInfo, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property", i)
 			}
@@ -239,7 +240,7 @@ func (tr *Torrent) parseFilesList(infoDict map[string]any) (TorrentInfo, error) 
 		pieceEndIndex := pieceStartIndex + (fileLength / pieceLength)
 
 		files[i] = File{
-			torrent: tr,
+			torrent:         tr,
 			Length:          fileLength,
 			Name:            filepath.Join(infoDict["name"].(string), path),
 			Offset:          fileOffset,
@@ -249,7 +250,7 @@ func (tr *Torrent) parseFilesList(infoDict map[string]any) (TorrentInfo, error) 
 		/*
 			If the offset for the next file is not '0' it means the final piece for this file was truncated.
 			Given this assertion, we can copy all the parsed pieces except the last piece, seeing as it will be copied
-			as the first piece from the next file.
+			as the first piece for the next file, unless the current file is the last file in the list.
 		*/
 		if result.nextFileOffset != 0 && !isLastFile {
 			piecesArr = append(piecesArr, result.pieces[:len(result.pieces)-1]...)
@@ -309,7 +310,7 @@ func (tr *Torrent) parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 	}
 
 	files := []File{{
-		torrent: tr,
+		torrent:         tr,
 		Length:          fileLength,
 		Name:            infoDict["name"].(string),
 		Offset:          0,
