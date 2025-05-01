@@ -44,6 +44,7 @@ type Torrent struct {
 	Info       TorrentInfo `mapstructure:"info"`
 	InfoHash   [sha1.Size]byte
 	TrackerUrl string `mapstructure:"announce"`
+	Trackers   []string
 }
 
 func downloadMetadataPiece(p PeerConnection, pieceIndex int) ([]byte, error) {
@@ -89,6 +90,38 @@ func getInfoHashFromQueryString(queryString string) (*[sha1.Size]byte, error) {
 	return &infoHash, nil
 }
 
+func parseAnnounceList(list any) ([]string, error) {
+	trackers := []string{}
+
+	announceList, ok := list.([]any)
+
+	if !ok {
+		return nil, fmt.Errorf("'announce-list' property should be a list, but received '%T'", announceList)
+	}
+
+	for listIndex, tier := range announceList {
+		tierList, ok := tier.([]any)
+
+		if !ok {
+			return nil, fmt.Errorf("announce list contains an invalid entry at index %d", listIndex)
+		}
+
+		for tierIndex, url := range tierList {
+			urlStr, ok := url.(string)
+
+			if !ok {
+				return nil, fmt.Errorf("announce list entry at index %d contains an invalid entry at index %d", listIndex, tierIndex)
+			}
+
+			if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") || strings.HasPrefix(urlStr, "udp://") {
+				trackers = append(trackers, urlStr)
+			}
+		}
+	}
+
+	return trackers, nil
+}
+
 func parseTorrentFile(src string) (*Torrent, error) {
 	torrent := new(Torrent)
 
@@ -123,6 +156,19 @@ func parseTorrentFile(src string) (*Torrent, error) {
 		}
 	}
 
+	var announceListErr error
+	var trackers []string
+
+	if announceList, ok := metainfo["announce-list"]; ok {
+		trackers, announceListErr = parseAnnounceList(announceList)
+	} else {
+		trackers = []string{metainfo["announce"].(string)}
+	}
+
+	if announceListErr != nil {
+		return torrent, fmt.Errorf("failed to parse announce list: %w", announceListErr)
+	}
+
 	torrentInfo, err := torrent.parseInfoDict(metainfo["info"].(map[string]any))
 
 	if err != nil {
@@ -137,6 +183,7 @@ func parseTorrentFile(src string) (*Torrent, error) {
 
 	torrent.Info = torrentInfo
 	torrent.InfoHash = sha1.Sum([]byte(bencodedValue))
+	torrent.Trackers = trackers
 	torrent.TrackerUrl = metainfo["announce"].(string)
 
 	return torrent, nil
