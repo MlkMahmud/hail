@@ -17,34 +17,55 @@ import (
 )
 
 func (tr *Torrent) GetPeers() ([]Peer, error) {
-	parsedURL, err := url.Parse(tr.TrackerUrl)
+	peersList := []Peer{}
 
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse tracker URL: %w", err)
+	for _, trackerUrl := range tr.Trackers {
+		parsedURL, err := url.Parse(trackerUrl)
+
+		if err != nil {
+			fmt.Printf("failed to parse tracker URL: %v\n", err)
+			continue
+		}
+
+		switch parsedURL.Scheme {
+		case "http", "https":
+			{
+				peers, err := tr.getPeersOverHTTP(trackerUrl)
+
+				if err != nil {
+					fmt.Println(err.Error())
+					continue
+				}
+
+				peersList = append(peersList, peers...)
+				break
+			}
+
+		case "udp":
+			{
+				peers, err := tr.getPeersOverUDP(trackerUrl)
+
+				if err != nil {
+					fmt.Println(err.Error())
+					continue
+				}
+
+				peersList = append(peersList, peers...)
+				break
+			}
+
+		default:
+			{
+				fmt.Println("tracker URL protocol must be one of 'HTTP' or 'UDP'")
+			}
+		}
 	}
 
-	switch parsedURL.Scheme {
-	case "http":
-		{
-			peers, err := tr.getPeersOverHTTP()
-			return peers, err
-		}
-
-	case "udp":
-		{
-			peers, err := tr.getPeersOverUDP()
-			return peers, err
-		}
-
-	default:
-		{
-			return nil, fmt.Errorf("tracker URL protocol must be one of 'HTTP' or 'UDP'")
-		}
-	}
+	return peersList, nil
 }
 
-func (t *Torrent) getPeersOverHTTP() ([]Peer, error) {
-	trackerUrl := t.getTrackerUrlWithParams()
+func (t *Torrent) getPeersOverHTTP(url string) ([]Peer, error) {
+	trackerUrl := t.getTrackerUrlWithParams(url)
 
 	req, err := http.NewRequest("GET", trackerUrl, nil)
 
@@ -78,8 +99,8 @@ func (t *Torrent) getPeersOverHTTP() ([]Peer, error) {
 	return peers, nil
 }
 
-func (tr *Torrent) getPeersOverUDP() ([]Peer, error) {
-	parsedUrl, err := url.Parse(tr.TrackerUrl)
+func (tr *Torrent) getPeersOverUDP(trackerUrl string) ([]Peer, error) {
+	parsedUrl, err := url.Parse(trackerUrl)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse tracker URL: %w", err)
@@ -89,13 +110,13 @@ func (tr *Torrent) getPeersOverUDP() ([]Peer, error) {
 		return nil, fmt.Errorf("tracker scheme must be 'UDP' got '%s'", scheme)
 	}
 
-	addr, err := net.ResolveUDPAddr("udp4", parsedUrl.Host)
+	addr, err := net.ResolveUDPAddr("udp", parsedUrl.Host)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve tracker URL: %w", err)
 	}
 
-	conn, err := net.DialTimeout("udp4", addr.String(), 5*time.Second)
+	conn, err := net.DialTimeout("udp", addr.String(), 5*time.Second)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to initiate connection with tracker: %w", err)
@@ -124,7 +145,7 @@ func (tr *Torrent) getPeersOverUDP() ([]Peer, error) {
 	return nil, nil
 }
 
-func (t *Torrent) getTrackerUrlWithParams() string {
+func (t *Torrent) getTrackerUrlWithParams(trackerUrl string) string {
 	params := url.Values{}
 	length := t.Info.Length
 
@@ -143,7 +164,7 @@ func (t *Torrent) getTrackerUrlWithParams() string {
 
 	queryString := params.Encode()
 
-	return fmt.Sprintf("%s?%s", t.TrackerUrl, queryString)
+	return fmt.Sprintf("%s?%s", trackerUrl, queryString)
 }
 
 func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
