@@ -3,6 +3,7 @@ package torrent
 import (
 	"bytes"
 	"crypto/sha1"
+	"encoding/base32"
 	"encoding/hex"
 	"fmt"
 	"net/url"
@@ -61,33 +62,43 @@ func downloadMetadataPiece(p PeerConnection, pieceIndex int) ([]byte, error) {
 	return piece, nil
 }
 
-func getInfoHashFromQueryString(queryString string) (*[sha1.Size]byte, error) {
-	expectedInfoHashStringLength := 40
-	infoHashPrefix := "urn:btih:"
+func parseInfoHash(xtParameter string) ([sha1.Size]byte, error) {
+	var infoHash [sha1.Size]byte
+	expectedHexEncodedLength := 40
+	expectedBase32EncodedLength := 32
+	infoHashURNPrefix := "urn:bith:"
 
-	if !strings.HasPrefix(queryString, infoHashPrefix) {
-		return nil, fmt.Errorf("info hash value contains an invalid prefix. expected '%s' got '%s'", infoHashPrefix, queryString)
+	if !strings.HasPrefix(xtParameter, infoHashURNPrefix) {
+		return infoHash, fmt.Errorf("info hash parameter contains an invalid prefix. expected '%s' got '%s'", infoHashURNPrefix, xtParameter)
 	}
 
-	infoHashString := queryString[len(infoHashPrefix):]
+	encodedInfoHash := xtParameter[len(infoHashURNPrefix):]
+	encodedInfoHashLength := len(encodedInfoHash)
 
-	if infoHashStringLength := len(infoHashString); infoHashStringLength != expectedInfoHashStringLength {
-		return nil, fmt.Errorf("hex encoded info hash string length should be '%d' long, but received string length is %d", expectedInfoHashStringLength, infoHashStringLength)
+	switch encodedInfoHashLength {
+	case expectedHexEncodedLength:
+		{
+			decodedInfoHash, err := hex.DecodeString(encodedInfoHash)
+			if err != nil {
+				return infoHash, fmt.Errorf("failed to decode hex encoded info hash: %w", err)
+			}
+			copy(infoHash[:], decodedInfoHash)
+		}
+	case expectedBase32EncodedLength:
+		{
+			decodedInfoHash, err := base32.StdEncoding.DecodeString(encodedInfoHash)
+			if err != nil {
+				return infoHash, fmt.Errorf("failed to decode base32 encoded info hash: %w", err)
+			}
+			copy(infoHash[:], decodedInfoHash)
+		}
+	default:
+		{
+			return infoHash, fmt.Errorf("info hash must be %d or %d characters long, but received value is %d characters long", expectedHexEncodedLength, expectedBase32EncodedLength, encodedInfoHashLength)
+		}
 	}
 
-	decodedString, err := hex.DecodeString(infoHashString)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to decoded hex encoded string %w", err)
-	}
-
-	if decodedStringLength := len(decodedString); decodedStringLength != sha1.Size {
-		return nil, fmt.Errorf("decoded info hash string length should be '%d' long, but received string length is %d", sha1.Size, decodedStringLength)
-	}
-
-	infoHash := [sha1.Size]byte(decodedString)
-
-	return &infoHash, nil
+	return infoHash, nil
 }
 
 func parseAnnounceList(list any) ([]string, error) {
@@ -214,7 +225,7 @@ func parseMagnetURL(magnetURL *url.URL) (*Torrent, error) {
 		torrentName = nameParam[0]
 	}
 
-	infoHash, err := getInfoHashFromQueryString(params["xt"][0])
+	infoHash, err := parseInfoHash(params["xt"][0])
 
 	if err != nil {
 		return nil, err
@@ -224,7 +235,7 @@ func parseMagnetURL(magnetURL *url.URL) (*Torrent, error) {
 		Info: TorrentInfo{
 			Name: torrentName,
 		},
-		InfoHash:   *infoHash,
+		InfoHash:   infoHash,
 		TrackerUrl: params["tr"][0],
 	}, nil
 }
