@@ -6,6 +6,8 @@ import (
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -133,114 +135,7 @@ func parseAnnounceList(list any) ([]string, error) {
 	return trackers, nil
 }
 
-func parseTorrentFile(src string) (*Torrent, error) {
-	torrent := new(Torrent)
-
-	content, err := os.ReadFile(src)
-
-	if err != nil {
-		return torrent, fmt.Errorf("failed to read metainfo file: %w", err)
-	}
-
-	decodedValue, _, err := bencode.DecodeValue(content)
-
-	if err != nil {
-		return torrent, fmt.Errorf("failed to decode metainfo file: %w", err)
-	}
-
-	metainfo, ok := decodedValue.(map[string]any)
-
-	if !ok {
-		return torrent, fmt.Errorf("expected metainfo to be a bencoded dictionary, but received '%T'", metainfo)
-	}
-
-	for key, value := range map[string]any{"announce": "string", "info": make(map[string]any)} {
-		if _, exists := metainfo[key]; !exists {
-			return torrent, fmt.Errorf("metainfo dictionary is missing required property '%s'", key)
-		}
-
-		expectedType := reflect.TypeOf(value)
-		receivedType := reflect.TypeOf(metainfo[key])
-
-		if receivedType != expectedType {
-			return torrent, fmt.Errorf("expected the '%s' property to be of type '%v', but received '%v'", key, expectedType, receivedType)
-		}
-	}
-
-	var announceListErr error
-	var trackers []string
-
-	if announceList, ok := metainfo["announce-list"]; ok {
-		trackers, announceListErr = parseAnnounceList(announceList)
-	} else {
-		trackers = []string{metainfo["announce"].(string)}
-	}
-
-	if announceListErr != nil {
-		return torrent, fmt.Errorf("failed to parse announce list: %w", announceListErr)
-	}
-
-	torrentInfo, err := torrent.parseInfoDict(metainfo["info"].(map[string]any))
-
-	if err != nil {
-		return torrent, fmt.Errorf("failed to parse metainfo 'info' dictionary %w", err)
-	}
-
-	bencodedValue, err := bencode.EncodeValue(metainfo["info"])
-
-	if err != nil {
-		return torrent, fmt.Errorf("failed to encode metainfo 'info' dictionary")
-	}
-
-	torrent.Info = torrentInfo
-	torrent.InfoHash = sha1.Sum([]byte(bencodedValue))
-	torrent.Trackers = trackers
-	torrent.TrackerUrl = metainfo["announce"].(string)
-
-	return torrent, nil
-}
-
-func parseMagnetURL(magnetURL *url.URL) (*Torrent, error) {
-	if magnetURL.Scheme != "magnet" {
-		return nil, fmt.Errorf("magnet link URI is invalid")
-	}
-
-	params, err := url.ParseQuery(magnetURL.RawQuery)
-
-	if err != nil {
-		return nil, err
-	}
-
-	if infoHashParam, ok := params["xt"]; !ok || len(infoHashParam) != 1 {
-		return nil, fmt.Errorf("magnet link must include an 'xt' (info hash) parameter")
-	}
-
-	if trackerParam, ok := params["tr"]; !ok || len(trackerParam) == 0 {
-		return nil, fmt.Errorf("magnet link must include a 'tr' (list of trackers) parameter")
-	}
-
-	torrentName := ""
-
-	if nameParam, ok := params["dn"]; ok && len(nameParam) > 0 {
-		torrentName = nameParam[0]
-	}
-
-	infoHash, err := parseInfoHash(params["xt"][0])
-
-	if err != nil {
-		return nil, err
-	}
-
-	return &Torrent{
-		Info: TorrentInfo{
-			Name: torrentName,
-		},
-		InfoHash:   infoHash,
-		TrackerUrl: params["tr"][0],
-	}, nil
-}
-
-func (tr *Torrent) parseFilesList(infoDict map[string]any) (TorrentInfo, error) {
+func parseFilesList(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
 	var torrentInfo TorrentInfo
 
 	filesList, ok := infoDict["files"].([]any)
@@ -299,7 +194,7 @@ func (tr *Torrent) parseFilesList(infoDict map[string]any) (TorrentInfo, error) 
 		}
 
 		files[i] = File{
-			torrent:         tr,
+			torrent:         &tr,
 			Length:          fileLength,
 			Name:            filepath.Join(infoDict["name"].(string), path),
 			Offset:          fileOffset,
@@ -327,7 +222,7 @@ func (tr *Torrent) parseFilesList(infoDict map[string]any) (TorrentInfo, error) 
 	return torrentInfo, nil
 }
 
-func (tr *Torrent) parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
+func parseInfoDict(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
 	var torrentInfo TorrentInfo
 
 	for key, value := range map[string]any{"name": "", "piece length": 0, "pieces": ""} {
@@ -344,7 +239,7 @@ func (tr *Torrent) parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 	}
 
 	if _, ok := infoDict["files"]; ok {
-		info, err := tr.parseFilesList(infoDict)
+		info, err := parseFilesList(infoDict, tr)
 
 		return info, err
 	}
@@ -370,7 +265,7 @@ func (tr *Torrent) parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 	}
 
 	files := []File{{
-		torrent:         tr,
+		torrent:         &tr,
 		Length:          fileLength,
 		Name:            infoDict["name"].(string),
 		Offset:          0,
@@ -382,6 +277,109 @@ func (tr *Torrent) parseInfoDict(infoDict map[string]any) (TorrentInfo, error) {
 		Files:  files,
 		Pieces: result.pieces,
 	}, nil
+}
+
+func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
+	var torrent Torrent
+
+	if magnetURL.Scheme != "magnet" {
+		return torrent, fmt.Errorf("URL scheme is invalid. expected \"magnet\" got \"%s\"", magnetURL.Scheme)
+	}
+
+	params, err := url.ParseQuery(magnetURL.RawQuery)
+
+	if err != nil {
+		return torrent, err
+	}
+
+	if infoHashParam, ok := params["xt"]; !ok || len(infoHashParam) != 1 {
+		return torrent, fmt.Errorf("magnet URL must include an 'xt' (info hash) parameter")
+	}
+
+	if trackerParam, ok := params["tr"]; !ok || len(trackerParam) == 0 {
+		return torrent, fmt.Errorf("magnet URL must include a 'tr' (list of trackers) parameter")
+	}
+
+	torrentName := ""
+
+	if nameParam, ok := params["dn"]; ok && len(nameParam) > 0 {
+		torrentName = nameParam[0]
+	}
+
+	infoHash, err := parseInfoHash(params["xt"][0])
+
+	if err != nil {
+		return torrent, err
+	}
+
+	torrent.Info = TorrentInfo{
+		Name: torrentName,
+	}
+	torrent.InfoHash = infoHash
+	torrent.TrackerUrl = params["tr"][0]
+
+	return torrent, nil
+}
+
+func parseTorrentFile(fileContent []byte) (Torrent, error) {
+	var torrent Torrent
+
+	decodedValue, _, err := bencode.DecodeValue(fileContent)
+
+	if err != nil {
+		return torrent, fmt.Errorf("failed to decode metainfo file: %w", err)
+	}
+
+	metainfo, ok := decodedValue.(map[string]any)
+
+	if !ok {
+		return torrent, fmt.Errorf("expected metainfo to be a bencoded dictionary, but received '%T'", metainfo)
+	}
+
+	for key, value := range map[string]any{"announce": "string", "info": make(map[string]any)} {
+		if _, exists := metainfo[key]; !exists {
+			return torrent, fmt.Errorf("metainfo dictionary is missing required property '%s'", key)
+		}
+
+		expectedType := reflect.TypeOf(value)
+		receivedType := reflect.TypeOf(metainfo[key])
+
+		if receivedType != expectedType {
+			return torrent, fmt.Errorf("expected the '%s' property to be of type '%v', but received '%v'", key, expectedType, receivedType)
+		}
+	}
+
+	var announceListErr error
+	var trackers []string
+
+	if announceList, ok := metainfo["announce-list"]; ok {
+		trackers, announceListErr = parseAnnounceList(announceList)
+	} else {
+		trackers = []string{metainfo["announce"].(string)}
+	}
+
+	if announceListErr != nil {
+		return torrent, fmt.Errorf("failed to parse announce list: %w", announceListErr)
+	}
+
+	torrentInfo, err := parseInfoDict(metainfo["info"].(map[string]any), torrent)
+
+	if err != nil {
+		return torrent, fmt.Errorf("failed to parse metainfo 'info' dictionary %w", err)
+	}
+
+	bencodedValue, err := bencode.EncodeValue(metainfo["info"])
+
+	if err != nil {
+		return torrent, fmt.Errorf("failed to encode metainfo 'info' dictionary")
+	}
+
+	torrent.Info = torrentInfo
+	torrent.InfoHash = sha1.Sum([]byte(bencodedValue))
+	torrent.Trackers = trackers
+	torrent.TrackerUrl = metainfo["announce"].(string)
+
+	return torrent, nil
 }
 
 func (t *Torrent) DownloadMetadata() error {
@@ -464,22 +462,64 @@ func (t *Torrent) DownloadMetadata() error {
 	return nil
 }
 
-func NewTorrent(src string) (*Torrent, error) {
-	var torrent *Torrent
+func NewTorrent(src string) (Torrent, error) {
+	var torrent Torrent
 	var err error
 
-	if utils.CheckIfFileExists(src) {
-		torrent, err = parseTorrentFile(src)
+	if utils.FileExists(src) {
+		fileContent, err := os.ReadFile(src)
+
+		if err != nil {
+			return torrent, fmt.Errorf("failed to read torrent file '%s' :%w", src, err)
+		}
+
+		torrent, err = parseTorrentFile(fileContent)
 		return torrent, err
 	}
 
-	url, err := url.Parse(src)
+	parsedUrl, err := url.Parse(src)
 
 	if err != nil {
-		return nil, fmt.Errorf("torrent src must be a path to '.torrent' file or a magnet URL")
+		return torrent, fmt.Errorf("torrent src must be a path to a \".torrent\" file or a URL")
 	}
 
-	torrent, err = parseMagnetURL(url)
+	switch parsedUrl.Scheme {
+	case "http", "https":
+		{
+			resp, err := http.DefaultClient.Get(src)
 
-	return torrent, err
+			if err != nil {
+				return torrent, fmt.Errorf("HTTP request failed: %w", err)
+			}
+
+			defer resp.Body.Close()
+
+			statusOK := resp.StatusCode >= 200 && resp.StatusCode < 300
+
+			if !statusOK {
+				return torrent, fmt.Errorf("received NON-OK HTTP status code \"%d\"", resp.StatusCode)
+			}
+
+			content, err := io.ReadAll(resp.Body)
+
+			if err != nil {
+				return torrent, fmt.Errorf("failed to read HTTP response body: %w", err)
+			}
+
+			torrent, err = parseTorrentFile(content)
+
+			return torrent, err
+		}
+
+	case "magnet":
+		{
+			torrent, err = parseMagnetURL(parsedUrl)
+			return torrent, err
+		}
+
+	default:
+		{
+			return torrent, fmt.Errorf("torrent URL scheme must be one of \"http\", \"https\" or \"magnet\"")
+		}
+	}
 }

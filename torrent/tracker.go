@@ -371,6 +371,8 @@ func (tr *Torrent) sendUDPAnnounceRequest(conn net.Conn, connectionId uint64, tr
 }
 
 /*
+Sends a connect request to a UDP tracker.
+
 connect request:
 
 	Offset  Size            Name            Value

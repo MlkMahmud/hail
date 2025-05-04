@@ -25,7 +25,7 @@ type RetryOptions[T any] struct {
 	Operation  func() (T, error)
 }
 
-func CheckIfFileExists(filepath string) bool {
+func FileExists(filepath string) bool {
 	_, err := os.Stat(filepath)
 
 	return !errors.Is(err, os.ErrNotExist)
