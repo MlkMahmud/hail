@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/MlkMahmud/hail/bencode"
 	"github.com/MlkMahmud/hail/utils"
@@ -30,12 +33,6 @@ type File struct {
 	pieceStartIndex int
 }
 
-type Peer struct {
-	InfoHash  [sha1.Size]byte
-	IpAddress string
-	Port      uint16
-}
-
 type TorrentInfo struct {
 	Files  []File
 	Length int     `mapstructure:"length"`
@@ -43,11 +40,25 @@ type TorrentInfo struct {
 	Pieces []Piece `mapstructure:"-"`
 }
 
+type TorrentStatus int
+
+const (
+	Connecting TorrentStatus = iota
+	Downloading
+	Finished
+	Seeding
+)
+
 type Torrent struct {
 	Info       TorrentInfo `mapstructure:"info"`
 	InfoHash   [sha1.Size]byte
 	TrackerUrl string `mapstructure:"announce"`
 	Trackers   []string
+
+	incomingPeersCh chan Peer
+	peerConnections map[string]PeerConnection
+	peers           map[string]Peer
+	failingPeers    map[string]Peer
 }
 
 func downloadMetadataPiece(p PeerConnection, pieceIndex int) ([]byte, error) {
@@ -62,45 +73,6 @@ func downloadMetadataPiece(p PeerConnection, pieceIndex int) ([]byte, error) {
 	}
 
 	return piece, nil
-}
-
-func parseInfoHash(xtParameter string) ([sha1.Size]byte, error) {
-	var infoHash [sha1.Size]byte
-	expectedHexEncodedLength := 40
-	expectedBase32EncodedLength := 32
-	infoHashURNPrefix := "urn:bith:"
-
-	if !strings.HasPrefix(xtParameter, infoHashURNPrefix) {
-		return infoHash, fmt.Errorf("info hash parameter contains an invalid prefix. expected '%s' got '%s'", infoHashURNPrefix, xtParameter)
-	}
-
-	encodedInfoHash := xtParameter[len(infoHashURNPrefix):]
-	encodedInfoHashLength := len(encodedInfoHash)
-
-	switch encodedInfoHashLength {
-	case expectedHexEncodedLength:
-		{
-			decodedInfoHash, err := hex.DecodeString(encodedInfoHash)
-			if err != nil {
-				return infoHash, fmt.Errorf("failed to decode hex encoded info hash: %w", err)
-			}
-			copy(infoHash[:], decodedInfoHash)
-		}
-	case expectedBase32EncodedLength:
-		{
-			decodedInfoHash, err := base32.StdEncoding.DecodeString(encodedInfoHash)
-			if err != nil {
-				return infoHash, fmt.Errorf("failed to decode base32 encoded info hash: %w", err)
-			}
-			copy(infoHash[:], decodedInfoHash)
-		}
-	default:
-		{
-			return infoHash, fmt.Errorf("info hash must be %d or %d characters long, but received value is %d characters long", expectedHexEncodedLength, expectedBase32EncodedLength, encodedInfoHashLength)
-		}
-	}
-
-	return infoHash, nil
 }
 
 func parseAnnounceList(list any) ([]string, error) {
@@ -279,6 +251,45 @@ func parseInfoDict(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
 	}, nil
 }
 
+func parseInfoHash(xtParameter string) ([sha1.Size]byte, error) {
+	var infoHash [sha1.Size]byte
+	expectedHexEncodedLength := 40
+	expectedBase32EncodedLength := 32
+	infoHashURNPrefix := "urn:bith:"
+
+	if !strings.HasPrefix(xtParameter, infoHashURNPrefix) {
+		return infoHash, fmt.Errorf("info hash parameter contains an invalid prefix. expected '%s' got '%s'", infoHashURNPrefix, xtParameter)
+	}
+
+	encodedInfoHash := xtParameter[len(infoHashURNPrefix):]
+	encodedInfoHashLength := len(encodedInfoHash)
+
+	switch encodedInfoHashLength {
+	case expectedHexEncodedLength:
+		{
+			decodedInfoHash, err := hex.DecodeString(encodedInfoHash)
+			if err != nil {
+				return infoHash, fmt.Errorf("failed to decode hex encoded info hash: %w", err)
+			}
+			copy(infoHash[:], decodedInfoHash)
+		}
+	case expectedBase32EncodedLength:
+		{
+			decodedInfoHash, err := base32.StdEncoding.DecodeString(encodedInfoHash)
+			if err != nil {
+				return infoHash, fmt.Errorf("failed to decode base32 encoded info hash: %w", err)
+			}
+			copy(infoHash[:], decodedInfoHash)
+		}
+	default:
+		{
+			return infoHash, fmt.Errorf("info hash must be %d or %d characters long, but received value is %d characters long", expectedHexEncodedLength, expectedBase32EncodedLength, encodedInfoHashLength)
+		}
+	}
+
+	return infoHash, nil
+}
+
 func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 	var torrent Torrent
 
@@ -317,6 +328,10 @@ func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 	}
 	torrent.InfoHash = infoHash
 	torrent.TrackerUrl = params["tr"][0]
+	torrent.incomingPeersCh = make(chan Peer, 1)
+	torrent.peerConnections = map[string]PeerConnection{}
+	torrent.peers = make(map[string]Peer)
+	torrent.failingPeers = make(map[string]Peer)
 
 	return torrent, nil
 }
@@ -379,7 +394,101 @@ func parseTorrentFile(fileContent []byte) (Torrent, error) {
 	torrent.Trackers = trackers
 	torrent.TrackerUrl = metainfo["announce"].(string)
 
+	torrent.incomingPeersCh = make(chan Peer, 1)
+	torrent.peerConnections = map[string]PeerConnection{}
+	torrent.peers = make(map[string]Peer)
+	torrent.failingPeers = make(map[string]Peer)
+
 	return torrent, nil
+}
+
+func (tr *Torrent) addPeerConnection() {
+	for {
+		peer := <-tr.incomingPeersCh
+		// todo: make max peer connections configurable.
+		if len(tr.peerConnections) >= 10 {
+			tr.peers[peer.String()] = peer
+			break
+		}
+
+		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peer})
+
+		if err := peerConnection.InitConnection(); err != nil {
+			fmt.Printf("failed to connect to peer: %s: %v\n", peer, err)
+			tr.failingPeers[peer.String()] = peer
+		} else {
+			fmt.Printf("connected to peer: %s\n", peer)
+			tr.peerConnections[peer.String()] = *peerConnection
+		}
+	}
+}
+
+func (tr *Torrent) discoverPeers() {
+	var wg sync.WaitGroup
+
+	maxConcurrency := 5
+	semaphore := make(chan struct{}, maxConcurrency)
+
+	fmt.Println("Discovering peers...")
+
+	for _, trackerUrl := range tr.Trackers {
+		wg.Add(1)
+		semaphore <- struct{}{}
+
+		go func() {
+			defer wg.Done()
+			defer func() { <-semaphore }()
+
+			peers := []Peer{}
+			parsedURL, err := url.Parse(trackerUrl)
+
+			if err != nil {
+				fmt.Printf("failed to parse tracker URL: %v\n", err)
+				return
+			}
+
+			switch parsedURL.Scheme {
+			case "http", "https":
+				{
+					pr, err := tr.getPeersOverHTTP(trackerUrl)
+
+					if err != nil {
+						fmt.Println(err.Error())
+						return
+					}
+
+					// send to buffer
+					peers = append(peers, pr...)
+					break
+				}
+
+			case "udp":
+				{
+					pr, err := tr.getPeersOverUDP(trackerUrl)
+
+					if err != nil {
+						fmt.Println(err.Error())
+						return
+					}
+
+					peers = append(peers, pr...)
+					break
+				}
+
+			default:
+				{
+					fmt.Println("tracker URL protocol must be one of 'HTTP' or 'UDP'")
+					return
+				}
+			}
+
+			for _, peer := range peers {
+				tr.incomingPeersCh <- peer
+			}
+		}()
+	}
+
+	wg.Wait()
 }
 
 func (t *Torrent) DownloadMetadata() error {
@@ -460,6 +569,25 @@ func (t *Torrent) DownloadMetadata() error {
 	t.Info = torrentInfo
 
 	return nil
+}
+
+func (t *Torrent) Start() {
+	go t.discoverPeers()
+	go t.addPeerConnection()
+
+	signalsCh := make(chan os.Signal, 1)
+	signal.Notify(signalsCh, syscall.SIGINT, syscall.SIGTERM)
+
+	<-signalsCh
+	fmt.Println("shutting down...")
+	t.stop()
+	fmt.Println("successfully closed all peer connections.")
+}
+
+func (t *Torrent) stop() {
+	for _, connection := range t.peerConnections {
+		connection.Close()
+	}
 }
 
 func NewTorrent(src string) (Torrent, error) {

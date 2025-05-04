@@ -133,16 +133,13 @@ func (tr *Torrent) getPeersOverUDP(trackerUrl string) ([]Peer, error) {
 		return nil, fmt.Errorf("failed to get list of peers: %w", err)
 	}
 
-	announceResponse, err := tr.sendUDPAnnounceRequest(conn, connectionId, transactionId)
+	peers, err := tr.sendUDPAnnounceRequest(conn, connectionId, transactionId)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get list of peers: %w", err)
 	}
 
-	// todo: parse peers from announce response
-	fmt.Println(announceResponse)
-
-	return nil, nil
+	return peers, nil
 }
 
 func (t *Torrent) getTrackerUrlWithParams(trackerUrl string) string {

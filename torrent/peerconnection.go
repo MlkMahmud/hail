@@ -143,6 +143,10 @@ func (p *PeerConnection) completeBaseHandshake() error {
 }
 
 func (p *PeerConnection) completeExtensionHandshake() error {
+	if !p.SupportsExtensions {
+		return nil
+	}
+
 	if err := p.sendExtensionHandshakeMessage(); err != nil {
 		return err
 	}
@@ -556,17 +560,13 @@ func (p *PeerConnection) InitConnection() error {
 		return err
 	}
 
+	if err := p.completeExtensionHandshake(); err != nil {
+		return err
+	}
+
 	if err := p.parseBitFieldMessage(); err != nil {
 		fmt.Printf("failed to receive 'Bitfield' message from peer: %v", err)
 		return nil
-	}
-
-	if !p.SupportsExtensions {
-		return nil
-	}
-
-	if err := p.completeExtensionHandshake(); err != nil {
-		return err
 	}
 
 	return nil
