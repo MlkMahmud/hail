@@ -1,7 +1,7 @@
 package torrent
 
 import (
-	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/base32"
 	"encoding/hex"
@@ -14,12 +14,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"syscall"
 
 	"github.com/MlkMahmud/hail/bencode"
 	"github.com/MlkMahmud/hail/utils"
-	"github.com/mitchellh/mapstructure"
 )
 
 type File struct {
@@ -35,9 +33,9 @@ type File struct {
 
 type TorrentInfo struct {
 	Files  []File
-	Length int     `mapstructure:"length"`
-	Name   string  `mapstructure:"name"`
-	Pieces []Piece `mapstructure:"-"`
+	Length int
+	Name   string
+	Pieces []Piece
 }
 
 type TorrentStatus int
@@ -50,15 +48,16 @@ const (
 )
 
 type Torrent struct {
-	Info       TorrentInfo `mapstructure:"info"`
-	InfoHash   [sha1.Size]byte
-	TrackerUrl string `mapstructure:"announce"`
-	Trackers   []string
+	Info     TorrentInfo
+	InfoHash [sha1.Size]byte
 
-	incomingPeersCh chan Peer
-	peerConnections map[string]PeerConnection
-	peers           map[string]Peer
-	failingPeers    map[string]Peer
+	failingPeers       map[string]Peer
+	failingTrackers    map[string]struct{}
+	incomingPeersCh    chan []Peer
+	maxPeerConnections int
+	peerConnections    map[string]PeerConnection
+	peers              map[string]Peer
+	trackers           map[string]struct{}
 }
 
 func downloadMetadataPiece(p PeerConnection, pieceIndex int) ([]byte, error) {
@@ -75,13 +74,13 @@ func downloadMetadataPiece(p PeerConnection, pieceIndex int) ([]byte, error) {
 	return piece, nil
 }
 
-func parseAnnounceList(list any) ([]string, error) {
-	trackers := []string{}
+func parseAnnounceList(list any) (map[string]struct{}, error) {
+	trackers := make(map[string]struct{})
 
 	announceList, ok := list.([]any)
 
 	if !ok {
-		return nil, fmt.Errorf("'announce-list' property should be a list, but received '%T'", announceList)
+		return nil, fmt.Errorf("\"announce-list\" property should be a list, but received '%T'", announceList)
 	}
 
 	for listIndex, tier := range announceList {
@@ -99,7 +98,7 @@ func parseAnnounceList(list any) ([]string, error) {
 			}
 
 			if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") || strings.HasPrefix(urlStr, "udp://") {
-				trackers = append(trackers, urlStr)
+				trackers[urlStr] = struct{}{}
 			}
 		}
 	}
@@ -311,6 +310,12 @@ func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 		return torrent, fmt.Errorf("magnet URL must include a 'tr' (list of trackers) parameter")
 	}
 
+	trackers := make(map[string]struct{})
+
+	for _, tr := range params["tr"] {
+		trackers[tr] = struct{}{}
+	}
+
 	torrentName := ""
 
 	if nameParam, ok := params["dn"]; ok && len(nameParam) > 0 {
@@ -327,11 +332,12 @@ func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 		Name: torrentName,
 	}
 	torrent.InfoHash = infoHash
-	torrent.TrackerUrl = params["tr"][0]
-	torrent.incomingPeersCh = make(chan Peer, 1)
+
+	torrent.incomingPeersCh = make(chan []Peer, 1)
 	torrent.peerConnections = map[string]PeerConnection{}
 	torrent.peers = make(map[string]Peer)
 	torrent.failingPeers = make(map[string]Peer)
+	torrent.trackers = trackers
 
 	return torrent, nil
 }
@@ -365,12 +371,12 @@ func parseTorrentFile(fileContent []byte) (Torrent, error) {
 	}
 
 	var announceListErr error
-	var trackers []string
+	var trackers map[string]struct{}
 
 	if announceList, ok := metainfo["announce-list"]; ok {
 		trackers, announceListErr = parseAnnounceList(announceList)
 	} else {
-		trackers = []string{metainfo["announce"].(string)}
+		trackers[metainfo["announce"].(string)] = struct{}{}
 	}
 
 	if announceListErr != nil {
@@ -391,201 +397,155 @@ func parseTorrentFile(fileContent []byte) (Torrent, error) {
 
 	torrent.Info = torrentInfo
 	torrent.InfoHash = sha1.Sum([]byte(bencodedValue))
-	torrent.Trackers = trackers
-	torrent.TrackerUrl = metainfo["announce"].(string)
 
-	torrent.incomingPeersCh = make(chan Peer, 1)
+	torrent.incomingPeersCh = make(chan []Peer, 1)
 	torrent.peerConnections = map[string]PeerConnection{}
 	torrent.peers = make(map[string]Peer)
 	torrent.failingPeers = make(map[string]Peer)
+	torrent.trackers = trackers
 
 	return torrent, nil
 }
 
-func (tr *Torrent) addPeerConnection() {
+func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 	for {
-		peer := <-tr.incomingPeersCh
 		// todo: make max peer connections configurable.
-		if len(tr.peerConnections) >= 10 {
-			tr.peers[peer.String()] = peer
-			break
-		}
+		// todo: pass context to allow torrent to cancel this operation
+		// todo: handle failed peers
+		select {
+		case peers := <-tr.incomingPeersCh:
+			{
+				for _, peer := range peers {
+					if len(tr.peerConnections) >= 10 {
+						tr.peers[peer.String()] = peer
+						break
+					}
 
-		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peer})
+					if _, ok := tr.peerConnections[peer.String()]; ok {
+						fmt.Println("peer already exists in connection pool")
+						break
+					}
 
-		if err := peerConnection.InitConnection(); err != nil {
-			fmt.Printf("failed to connect to peer: %s: %v\n", peer, err)
-			tr.failingPeers[peer.String()] = peer
-		} else {
-			fmt.Printf("connected to peer: %s\n", peer)
-			tr.peerConnections[peer.String()] = *peerConnection
-		}
-	}
-}
+					peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peer})
 
-func (tr *Torrent) discoverPeers() {
-	var wg sync.WaitGroup
+					if err := peerConnection.InitConnection(); err != nil {
+						fmt.Printf("failed to connect to peer: %s: %v\n", peer, err)
+						tr.failingPeers[peer.String()] = peer
+					} else {
+						fmt.Printf("connected to peer: %s\n", peer)
+						tr.peerConnections[peer.String()] = *peerConnection
+					}
+				}
+			}
 
-	maxConcurrency := 5
-	semaphore := make(chan struct{}, maxConcurrency)
-
-	fmt.Println("Discovering peers...")
-
-	for _, trackerUrl := range tr.Trackers {
-		wg.Add(1)
-		semaphore <- struct{}{}
-
-		go func() {
-			defer wg.Done()
-			defer func() { <-semaphore }()
-
-			peers := []Peer{}
-			parsedURL, err := url.Parse(trackerUrl)
-
-			if err != nil {
-				fmt.Printf("failed to parse tracker URL: %v\n", err)
+		case <-ctx.Done():
+			{
 				return
 			}
-
-			switch parsedURL.Scheme {
-			case "http", "https":
-				{
-					pr, err := tr.getPeersOverHTTP(trackerUrl)
-
-					if err != nil {
-						fmt.Println(err.Error())
-						return
-					}
-
-					// send to buffer
-					peers = append(peers, pr...)
-					break
-				}
-
-			case "udp":
-				{
-					pr, err := tr.getPeersOverUDP(trackerUrl)
-
-					if err != nil {
-						fmt.Println(err.Error())
-						return
-					}
-
-					peers = append(peers, pr...)
-					break
-				}
-
-			default:
-				{
-					fmt.Println("tracker URL protocol must be one of 'HTTP' or 'UDP'")
-					return
-				}
-			}
-
-			for _, peer := range peers {
-				tr.incomingPeersCh <- peer
-			}
-		}()
-	}
-
-	wg.Wait()
-}
-
-func (t *Torrent) DownloadMetadata() error {
-	if t.Info.Pieces != nil {
-		return nil
-	}
-
-	hasDownloadedAllPieces := false
-	index := 0
-	metadataBuffer := []byte{}
-	peers, err := t.GetPeers()
-
-	if err != nil {
-		return nil
-	}
-
-	for i, numOfPeers := 0, len(peers); i < numOfPeers && !hasDownloadedAllPieces; i++ {
-		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peers[i]})
-
-		if err := peerConnection.InitConnection(); err != nil {
-			peerConnection.Close()
-			continue
-		}
-
-		for {
-			metadataPiece, err := downloadMetadataPiece(*peerConnection, index)
-
-			if err != nil {
-				break
-			}
-
-			metadataBuffer = append(metadataBuffer, metadataPiece...)
-			index += 1
-
-			//  If it is not the last piece of the metadata, it MUST be 16kiB (BlockSize).
-			if len(metadataPiece) != BlockSize {
-				hasDownloadedAllPieces = true
-				break
-			}
 		}
 	}
-
-	if !hasDownloadedAllPieces {
-		return fmt.Errorf("failed to download torrent metadata from %d peers", len(peers))
-	}
-
-	metadataHash := sha1.Sum(metadataBuffer)
-
-	if !bytes.Equal(t.InfoHash[:], metadataHash[:]) {
-		return fmt.Errorf("downloaded metadata hash is does not match torrent info hash")
-	}
-
-	decoded, _, err := bencode.DecodeValue(metadataBuffer)
-
-	if err != nil {
-		return fmt.Errorf("failed to decode downloaded metadata: %w", err)
-	}
-
-	infoDict, ok := decoded.(map[string]any)
-
-	if !ok {
-		return fmt.Errorf("expected the decoded payload to be a dict, but got %T", infoDict)
-	}
-
-	var torrentInfo TorrentInfo
-
-	if err := mapstructure.Decode(infoDict, &torrentInfo); err != nil {
-		return err
-	}
-
-	pieces, err := parseTorrentPieces(infoDict)
-
-	if err != nil {
-		return err
-	}
-
-	torrentInfo.Pieces = pieces
-	t.Info = torrentInfo
-
-	return nil
 }
+
+// func (t *Torrent) DownloadMetadata() error {
+// 	if t.Info.Pieces != nil {
+// 		return nil
+// 	}
+
+// 	hasDownloadedAllPieces := false
+// 	index := 0
+// 	metadataBuffer := []byte{}
+// 	peers, err := t.sendAnnounceRequest()
+
+// 	if err != nil {
+// 		return nil
+// 	}
+
+// 	for i, numOfPeers := 0, len(peers); i < numOfPeers && !hasDownloadedAllPieces; i++ {
+// 		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peers[i]})
+
+// 		if err := peerConnection.InitConnection(); err != nil {
+// 			peerConnection.Close()
+// 			continue
+// 		}
+
+// 		for {
+// 			metadataPiece, err := downloadMetadataPiece(*peerConnection, index)
+
+// 			if err != nil {
+// 				break
+// 			}
+
+// 			metadataBuffer = append(metadataBuffer, metadataPiece...)
+// 			index += 1
+
+// 			//  If it is not the last piece of the metadata, it MUST be 16kiB (BlockSize).
+// 			if len(metadataPiece) != BlockSize {
+// 				hasDownloadedAllPieces = true
+// 				break
+// 			}
+// 		}
+// 	}
+
+// 	if !hasDownloadedAllPieces {
+// 		return fmt.Errorf("failed to download torrent metadata from %d peers", len(peers))
+// 	}
+
+// 	metadataHash := sha1.Sum(metadataBuffer)
+
+// 	if !bytes.Equal(t.InfoHash[:], metadataHash[:]) {
+// 		return fmt.Errorf("downloaded metadata hash is does not match torrent info hash")
+// 	}
+
+// 	decoded, _, err := bencode.DecodeValue(metadataBuffer)
+
+// 	if err != nil {
+// 		return fmt.Errorf("failed to decode downloaded metadata: %w", err)
+// 	}
+
+// 	infoDict, ok := decoded.(map[string]any)
+
+// 	if !ok {
+// 		return fmt.Errorf("expected the decoded payload to be a dict, but got %T", infoDict)
+// 	}
+
+// 	var torrentInfo TorrentInfo
+
+// 	if err := mapstructure.Decode(infoDict, &torrentInfo); err != nil {
+// 		return err
+// 	}
+
+// 	pieces, err := parseTorrentPieces(infoDict)
+
+// 	if err != nil {
+// 		return err
+// 	}
+
+// 	torrentInfo.Pieces = pieces
+// 	t.Info = torrentInfo
+
+// 	return nil
+// }
 
 func (t *Torrent) Start() {
-	go t.discoverPeers()
-	go t.addPeerConnection()
+	ctx, cancelFunc := context.WithCancel(context.Background())
 
+	go t.startAnnouncer(ctx)
+	go t.handleIncomingPeers(ctx)
+
+	// todo: move this signal handler to a higher-level (session)
 	signalsCh := make(chan os.Signal, 1)
 	signal.Notify(signalsCh, syscall.SIGINT, syscall.SIGTERM)
 
 	<-signalsCh
 	fmt.Println("shutting down...")
+	cancelFunc()
 	t.stop()
 	fmt.Println("successfully closed all peer connections.")
 }
 
 func (t *Torrent) stop() {
 	for _, connection := range t.peerConnections {
+		// todo: use a context object to cancel all active goroutines.
 		connection.Close()
 	}
 }

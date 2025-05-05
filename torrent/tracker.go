@@ -1,6 +1,7 @@
 package torrent
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -11,160 +12,41 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/MlkMahmud/hail/bencode"
 	"github.com/MlkMahmud/hail/utils"
 )
 
-func (tr *Torrent) GetPeers() ([]Peer, error) {
-	peersList := []Peer{}
+type UDPTrackerActionId int
 
-	for _, trackerUrl := range tr.Trackers {
-		parsedURL, err := url.Parse(trackerUrl)
+const (
+	connectActionId UDPTrackerActionId = iota
+	announceActionId
+)
 
-		if err != nil {
-			fmt.Printf("failed to parse tracker URL: %v\n", err)
-			continue
-		}
+/*
+The tracker can send one of two kinds of response, as a [w:Bencode BEncoded] dictionary. If the tracker was able to process the client request it sends a BEncoded dictionary that has two keys:
 
-		switch parsedURL.Scheme {
-		case "http", "https":
-			{
-				peers, err := tr.getPeersOverHTTP(trackerUrl)
+interval
 
-				if err != nil {
-					fmt.Println(err.Error())
-					continue
-				}
+	Number of seconds the downloader should wait between regular rerequests.
 
-				peersList = append(peersList, peers...)
-				break
-			}
+peers
 
-		case "udp":
-			{
-				peers, err := tr.getPeersOverUDP(trackerUrl)
+	List of dictionaries corresponding to peers. (Each dictionary contains the following keys.)
+		id
+			peer_id used by peer to identify with tracker. This key is not present if the no_peer_id extension is used (see below).
+		ip
+			IP address of the client.
+		port
+			Port on with the client is listening for a connection.
 
-				if err != nil {
-					fmt.Println(err.Error())
-					continue
-				}
+The compact extension tells the tracker to send the peers key as a single string that represents all address and ports of peers. For example, a client at the IP 10.10.10.5 listening on port 128 would be coded as a string containing the following bytes 0A 0A 0A 05 00 80
 
-				peersList = append(peersList, peers...)
-				break
-			}
-
-		default:
-			{
-				fmt.Println("tracker URL protocol must be one of 'HTTP' or 'UDP'")
-			}
-		}
-	}
-
-	return peersList, nil
-}
-
-func (t *Torrent) getPeersOverHTTP(url string) ([]Peer, error) {
-	trackerUrl := t.getTrackerUrlWithParams(url)
-
-	req, err := http.NewRequest("GET", trackerUrl, nil)
-
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := http.DefaultClient.Do(req)
-
-	if err != nil {
-		return nil, err
-	}
-
-	defer res.Body.Close()
-	var trackerResponse []byte
-
-	if res.StatusCode == http.StatusOK {
-		trackerResponse, err = io.ReadAll(res.Body)
-
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	peers, err := t.parseHTTPAnnounceResponse(trackerResponse)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return peers, nil
-}
-
-func (tr *Torrent) getPeersOverUDP(trackerUrl string) ([]Peer, error) {
-	parsedUrl, err := url.Parse(trackerUrl)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse tracker URL: %w", err)
-	}
-
-	if scheme := parsedUrl.Scheme; scheme != "udp" {
-		return nil, fmt.Errorf("tracker scheme must be 'UDP' got '%s'", scheme)
-	}
-
-	addr, err := net.ResolveUDPAddr("udp", parsedUrl.Host)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve tracker URL: %w", err)
-	}
-
-	conn, err := net.DialTimeout("udp", addr.String(), 5*time.Second)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to initiate connection with tracker: %w", err)
-	}
-
-	defer conn.Close()
-
-	transactionId := rand.Uint32()
-
-	// send connect message
-	connectionId, err := sendUDPConnectRequest(conn, transactionId)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get list of peers: %w", err)
-	}
-
-	peers, err := tr.sendUDPAnnounceRequest(conn, connectionId, transactionId)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get list of peers: %w", err)
-	}
-
-	return peers, nil
-}
-
-func (t *Torrent) getTrackerUrlWithParams(trackerUrl string) string {
-	params := url.Values{}
-	length := t.Info.Length
-
-	if length == 0 {
-		// set length to a random value if the length of the torrent file is not known yet
-		length = 999
-	}
-
-	params.Add("info_hash", string(t.InfoHash[:]))
-	params.Add("peer_id", utils.GenerateRandomString(20, ""))
-	params.Add("port", "6881")
-	params.Add("downloaded", "0")
-	params.Add("uploaded", "0")
-	params.Add("left", strconv.Itoa(length))
-	params.Add("compact", "1")
-
-	queryString := params.Encode()
-
-	return fmt.Sprintf("%s?%s", trackerUrl, queryString)
-}
-
+The second kind of response is a BEncoded dictionary with a failure reason key. It means that the tracker was unable to process the request. The value of the failure reason is a human readable text that contains the cause of the error. If this key is present, no other key needs to be present.
+*/
 func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
 	decodedResponse, _, err := bencode.DecodeValue(res)
 
@@ -304,7 +186,60 @@ func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, tran
 	return peersArr, nil
 }
 
+func (tr *Torrent) sendHTTPAnnounceRequest(trackerURL string) ([]Peer, error) {
+	params := url.Values{}
+	length := tr.Info.Length
+
+	if length == 0 {
+		// set length to a random value if the length of the torrent file is not known yet
+		length = 999
+	}
+
+	params.Add("info_hash", string(tr.InfoHash[:]))
+	params.Add("peer_id", utils.GenerateRandomString(20, ""))
+	params.Add("port", "6881")
+	params.Add("downloaded", "0")
+	params.Add("uploaded", "0")
+	params.Add("left", strconv.Itoa(length))
+	params.Add("compact", "1")
+
+	querystring := params.Encode()
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s?%s", trackerURL, querystring), nil)
+
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := http.DefaultClient.Do(req)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer res.Body.Close()
+	var trackerResponse []byte
+
+	if res.StatusCode == http.StatusOK {
+		trackerResponse, err = io.ReadAll(res.Body)
+
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	peers, err := tr.parseHTTPAnnounceResponse(trackerResponse)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return peers, nil
+}
+
 /*
+Sends an announce request to a UDP tracker.
+
 Announce Request
 
 	Choose a random transaction ID.
@@ -328,8 +263,40 @@ Announce Request
 	96      16-bit integer  port
 	98
 */
-func (tr *Torrent) sendUDPAnnounceRequest(conn net.Conn, connectionId uint64, transactionId uint32) ([]Peer, error) {
-	action := uint32(1)
+func (tr *Torrent) sendUDPAnnounceRequest(trackerUrl string) ([]Peer, error) {
+	parsedUrl, err := url.Parse(trackerUrl)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tracker URL: %w", err)
+	}
+
+	if scheme := parsedUrl.Scheme; scheme != "udp" {
+		return nil, fmt.Errorf("tracker scheme must be 'UDP' got '%s'", scheme)
+	}
+
+	addr, err := net.ResolveUDPAddr("udp", parsedUrl.Host)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve tracker URL: %w", err)
+	}
+
+	conn, err := net.DialTimeout("udp", addr.String(), 5*time.Second)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to initiate connection with tracker: %w", err)
+	}
+
+	defer conn.Close()
+
+	transactionId := rand.Uint32()
+
+	connectionId, err := sendUDPConnectRequest(conn, transactionId)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get list of peers: %w", err)
+	}
+
+	action := uint32(announceActionId)
 	peerId := utils.GenerateRandomString(20, "")
 	port := uint16(6881)
 	reqBuffer := make([]byte, 98)
@@ -408,7 +375,7 @@ func (tr *Torrent) sendUDPAnnounceRequest(conn net.Conn, connectionId uint64, tr
 /*
 Sends a connect request to a UDP tracker.
 
-connect request:
+Connect request:
 
 	Offset  Size            Name            Value
 	0       64-bit integer  protocol_id     0x41727101980 // magic constant
@@ -417,7 +384,7 @@ connect request:
 	16
 */
 func sendUDPConnectRequest(conn net.Conn, transactionId uint32) (uint64, error) {
-	action := uint32(0)
+	action := uint32(connectActionId)
 	connectRequestSize := 16
 	reqBuffer := make([]byte, connectRequestSize)
 	resBuffer := make([]byte, connectRequestSize)
@@ -469,4 +436,92 @@ func sendUDPConnectRequest(conn net.Conn, transactionId uint32) (uint64, error) 
 	})
 
 	return connectionId, err
+}
+
+func (tr *Torrent) sendAnnounceRequest(trackerUrl string) ([]Peer, error) {
+	parsedURL, err := url.Parse(trackerUrl)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tracker URL: %w", err)
+	}
+
+	switch parsedURL.Scheme {
+	case "http", "https":
+		{
+			peers, err := tr.sendHTTPAnnounceRequest(trackerUrl)
+
+			if err != nil {
+				return nil, err
+			}
+
+			return peers, nil
+		}
+
+	case "udp":
+		{
+			peers, err := tr.sendUDPAnnounceRequest(trackerUrl)
+
+			if err != nil {
+				return nil, err
+			}
+
+			return peers, nil
+		}
+
+	default:
+		{
+			return nil, fmt.Errorf("tracker URL protocol must be one of 'HTTP' or 'UDP'")
+		}
+	}
+
+}
+
+func (tr *Torrent) startAnnouncer(ctx context.Context) {
+	// todo: make this function run in a interval
+	// todo: handle failed trackers
+	const announceInterval = 3 * time.Second
+	ticker := time.NewTicker(announceInterval)
+
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			{
+				// todo: notify trackers that we're stopping?
+				return
+			}
+
+		case <-ticker.C:
+			{
+				var wg sync.WaitGroup
+
+				maxConcurrency := 5
+				semaphore := make(chan struct{}, maxConcurrency)
+
+				fmt.Println("Discovering peers...")
+
+				for trackerUrl := range tr.trackers {
+					wg.Add(1)
+					semaphore <- struct{}{}
+
+					go func() {
+						defer func() { <-semaphore }()
+						defer wg.Done()
+
+						peers, err := tr.sendAnnounceRequest(trackerUrl)
+
+						if err != nil {
+							fmt.Println(err.Error())
+							return
+						}
+
+						tr.incomingPeersCh <- peers
+					}()
+				}
+
+				wg.Wait()
+			}
+		}
+	}
 }
