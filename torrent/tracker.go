@@ -361,7 +361,7 @@ func (tr *Torrent) sendUDPAnnounceRequest(conn net.Conn, connectionId uint64, tr
 
 			return peers, err
 		},
-		MaxAttemps: 3,
+		MaxAttempts: 3,
 	})
 
 	return response, err
@@ -427,7 +427,7 @@ func sendUDPConnectRequest(conn net.Conn, transactionId uint32) (uint64, error) 
 
 			return binary.BigEndian.Uint64(resBuffer[8:]), nil
 		},
-		MaxAttemps: 4,
+		MaxAttempts: 4,
 	})
 
 	return connectionId, err

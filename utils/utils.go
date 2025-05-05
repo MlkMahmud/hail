@@ -21,7 +21,7 @@ var (
 
 type RetryOptions[T any] struct {
 	Delay      time.Duration
-	MaxAttemps int
+	MaxAttempts int
 	Operation  func() (T, error)
 }
 
@@ -107,7 +107,7 @@ func Retry[T any](options RetryOptions[T]) (T, error) {
 	var res T
 	var err error
 
-	for range options.MaxAttemps {
+	for range options.MaxAttempts {
 		res, err = options.Operation()
 
 		if err == nil {
