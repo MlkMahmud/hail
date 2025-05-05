@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -191,30 +192,67 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
 		return nil, fmt.Errorf("decoded response does not include a \"peers\" key")
 	}
 
-	peersValue, ok := peers.(string)
+	switch peersValue := peers.(type) {
+	case string:
+		{
+			peersStringLen := len(peersValue)
+			peerSize := 6
 
-	if !ok {
-		return nil, fmt.Errorf("decoded value of \"peers\" is invalid. expected a string got %T", peers)
+			if peersStringLen%peerSize != 0 {
+				return nil, fmt.Errorf("peers value must be a multiple of '%d' bytes", peerSize)
+			}
+
+			numOfPeers := peersStringLen / peerSize
+			peersArr := make([]Peer, numOfPeers)
+
+			for i, j := 0, 0; i < peersStringLen; i += peerSize {
+				IpAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
+				Port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
+				peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.InfoHash}
+				j++
+			}
+
+			return peersArr, nil
+		}
+	case []any:
+		{
+			peersArr := make([]Peer, len(peersValue))
+
+			for index, peer := range peersValue {
+				peerDict, ok := peer.(map[string]any)
+
+				if !ok {
+					return nil, fmt.Errorf("peers list contains an invalid entry at index: \"%d\"", index)
+				}
+
+				for key, value := range map[string]any{"ip": "", "port": 0} {
+					if _, exists := peerDict[key]; !exists {
+						return nil, fmt.Errorf("peers list entry at index '%d' is missing required property \"%s\"", index, key)
+					}
+
+					expectedType := reflect.TypeOf(value)
+					receivedType := reflect.TypeOf(peerDict[key])
+
+					if receivedType != expectedType {
+						return nil, fmt.Errorf("peers list entry at index '%d' contains an invalid \"%s\" property", index, key)
+					}
+				}
+
+				peersArr[index] = Peer{
+					InfoHash:  t.InfoHash,
+					IpAddress: peerDict["ip"].(string),
+					Port:      uint16(peerDict["port"].(int)),
+				}
+			}
+
+			return peersArr, nil
+		}
+
+	default:
+		{
+			return nil, fmt.Errorf("decoded value of \"peers\" is invalid. expected a string or a list of dictionaries, but received %T", peersValue)
+		}
 	}
-
-	peersStringLen := len(peersValue)
-	peerSize := 6
-
-	if peersStringLen%peerSize != 0 {
-		return nil, fmt.Errorf("peers value must be a multiple of '%d' bytes", peerSize)
-	}
-
-	numOfPeers := peersStringLen / peerSize
-	peersArr := make([]Peer, numOfPeers)
-
-	for i, j := 0, 0; i < peersStringLen; i += peerSize {
-		IpAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
-		Port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
-		peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.InfoHash}
-		j++
-	}
-
-	return peersArr, nil
 }
 
 /*
