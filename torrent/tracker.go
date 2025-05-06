@@ -499,9 +499,7 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 				maxConcurrency := 5
 				semaphore := make(chan struct{}, maxConcurrency)
 
-				fmt.Println("Discovering peers...")
-
-				for trackerUrl := range tr.trackers {
+				for trackerUrl := range tr.trackers.Entries() {
 					wg.Add(1)
 					semaphore <- struct{}{}
 

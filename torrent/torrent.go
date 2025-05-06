@@ -51,31 +51,35 @@ type Torrent struct {
 	Info     TorrentInfo
 	InfoHash [sha1.Size]byte
 
+	bannedPeers        utils.Set
+	bannedPeersCh      chan string
 	failingPeers       map[string]Peer
-	failingTrackers    map[string]struct{}
+	failingTrackers    utils.Set
 	incomingPeersCh    chan []Peer
 	maxPeerConnections int
 	peerConnections    map[string]PeerConnection
 	peers              map[string]Peer
-	trackers           map[string]struct{}
+	status             TorrentStatus
+	statusCh           chan TorrentStatus
+	trackers           utils.Set
 }
 
-func downloadMetadataPiece(p PeerConnection, pieceIndex int) ([]byte, error) {
-	if err := p.sendMetadataRequestMessage(pieceIndex); err != nil {
-		return nil, err
-	}
+// func downloadMetadataPiece(p PeerConnection, pieceIndex int) ([]byte, error) {
+// 	if err := p.sendMetadataRequestMessage(pieceIndex); err != nil {
+// 		return nil, err
+// 	}
 
-	piece, err := p.receiveMetadataMessage()
+// 	piece, err := p.receiveMetadataMessage()
 
-	if err != nil {
-		return nil, err
-	}
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	return piece, nil
-}
+// 	return piece, nil
+// }
 
-func parseAnnounceList(list any) (map[string]struct{}, error) {
-	trackers := make(map[string]struct{})
+func parseAnnounceList(list any) (*utils.Set, error) {
+	trackers := utils.NewSet()
 
 	announceList, ok := list.([]any)
 
@@ -98,7 +102,7 @@ func parseAnnounceList(list any) (map[string]struct{}, error) {
 			}
 
 			if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") || strings.HasPrefix(urlStr, "udp://") {
-				trackers[urlStr] = struct{}{}
+				trackers.Add(urlStr)
 			}
 		}
 	}
@@ -310,10 +314,10 @@ func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 		return torrent, fmt.Errorf("magnet URL must include a 'tr' (list of trackers) parameter")
 	}
 
-	trackers := make(map[string]struct{})
+	trackers := utils.NewSet()
 
 	for _, tr := range params["tr"] {
-		trackers[tr] = struct{}{}
+		trackers.Add(tr)
 	}
 
 	torrentName := ""
@@ -337,7 +341,8 @@ func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 	torrent.peerConnections = map[string]PeerConnection{}
 	torrent.peers = make(map[string]Peer)
 	torrent.failingPeers = make(map[string]Peer)
-	torrent.trackers = trackers
+	torrent.statusCh = make(chan TorrentStatus, 1)
+	torrent.trackers = *trackers
 
 	return torrent, nil
 }
@@ -371,12 +376,12 @@ func parseTorrentFile(fileContent []byte) (Torrent, error) {
 	}
 
 	var announceListErr error
-	var trackers map[string]struct{}
+	trackers := utils.NewSet()
 
 	if announceList, ok := metainfo["announce-list"]; ok {
 		trackers, announceListErr = parseAnnounceList(announceList)
 	} else {
-		trackers[metainfo["announce"].(string)] = struct{}{}
+		trackers.Add(metainfo["announce"].(string))
 	}
 
 	if announceListErr != nil {
@@ -402,21 +407,36 @@ func parseTorrentFile(fileContent []byte) (Torrent, error) {
 	torrent.peerConnections = map[string]PeerConnection{}
 	torrent.peers = make(map[string]Peer)
 	torrent.failingPeers = make(map[string]Peer)
-	torrent.trackers = trackers
+	torrent.statusCh = make(chan TorrentStatus, 1)
+	torrent.trackers = *trackers
 
 	return torrent, nil
 }
 
+// Blacklists peers that have experienced multiple piece hash verifications.
+func (tr *Torrent) handleBannedPeers(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			{
+				return
+			}
+		case bannedPeerAddress := <-tr.bannedPeersCh:
+			{
+				tr.bannedPeers.Add(bannedPeerAddress)
+			}
+		}
+	}
+}
+
 func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 	for {
-		// todo: make max peer connections configurable.
-		// todo: pass context to allow torrent to cancel this operation
 		// todo: handle failed peers
 		select {
 		case peers := <-tr.incomingPeersCh:
 			{
 				for _, peer := range peers {
-					if len(tr.peerConnections) >= 10 {
+					if len(tr.peerConnections) >= tr.maxPeerConnections {
 						tr.peers[peer.String()] = peer
 						break
 					}
@@ -441,6 +461,22 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 		case <-ctx.Done():
 			{
 				return
+			}
+		}
+	}
+}
+
+func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			{
+				return
+			}
+
+		case status := <-tr.statusCh:
+			{
+				tr.status = status
 			}
 		}
 	}
@@ -529,8 +565,11 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 func (t *Torrent) Start() {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
+	// todo: make "ctx" a property of the torrent?
 	go t.startAnnouncer(ctx)
 	go t.handleIncomingPeers(ctx)
+	go t.handleStatusUpdate(ctx)
+	go t.handleBannedPeers(ctx)
 
 	// todo: move this signal handler to a higher-level (session)
 	signalsCh := make(chan os.Signal, 1)
