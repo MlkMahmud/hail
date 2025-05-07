@@ -315,22 +315,16 @@ func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 		return torrent, fmt.Errorf("magnet URL must include a 'tr' (list of trackers) parameter")
 	}
 
-	trackers := utils.NewSet()
-
-	for _, tr := range params["tr"] {
-		trackers.Add(tr)
-	}
-
-	torrentName := ""
-
-	if nameParam, ok := params["dn"]; ok && len(nameParam) > 0 {
-		torrentName = nameParam[0]
-	}
-
 	infoHash, err := parseInfoHash(params["xt"][0])
 
 	if err != nil {
 		return torrent, err
+	}
+
+	trackers := utils.NewSet()
+
+	for _, tr := range params["tr"] {
+		trackers.Add(tr)
 	}
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
@@ -338,9 +332,7 @@ func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 	torrent.ctx = ctx
 	torrent.cancelFunc = cancelFunc
 
-	torrent.info = &torrentInfo{name: torrentName}
 	torrent.infoHash = infoHash
-
 	torrent.incomingPeersCh = make(chan []Peer, 1)
 	torrent.maxPeerConnections = 10
 	torrent.peerConnections = map[string]PeerConnection{}
