@@ -49,6 +49,10 @@ const (
 	seeding
 )
 
+const (
+	maxPeers = 50
+)
+
 type Torrent struct {
 	info     *torrentInfo
 	infoHash [sha1.Size]byte
@@ -454,10 +458,11 @@ func (tr *Torrent) handleIncomingPeers() {
 					if err := peerConnection.InitConnection(); err != nil {
 						fmt.Printf("failed to connect to peer: %s: %v\n", peer, err)
 						tr.failingPeers[peer.String()] = peer
-					} else {
-						fmt.Printf("connected to peer: %s\n", peer)
-						tr.peerConnections[peer.String()] = *peerConnection
+						break
 					}
+
+					fmt.Printf("connected to peer: %s\n", peer)
+					tr.peerConnections[peer.String()] = *peerConnection
 				}
 			}
 
@@ -506,14 +511,14 @@ func (tr *Torrent) startAnnouncer() {
 				var wg sync.WaitGroup
 
 				maxConcurrency := 5
-				semaphore := make(chan struct{}, maxConcurrency)
+				sem := utils.NewSemaphore(maxConcurrency)
 
 				for trackerUrl := range tr.trackers.Entries() {
 					wg.Add(1)
-					semaphore <- struct{}{}
+					sem.Acquire()
 
 					go func() {
-						defer func() { <-semaphore }()
+						defer sem.Release()
 						defer wg.Done()
 
 						peers, err := tr.sendAnnounceRequest(trackerUrl)
