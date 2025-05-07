@@ -1,7 +1,6 @@
 package torrent
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/MlkMahmud/hail/bencode"
@@ -90,7 +88,7 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
 			for i, j := 0, 0; i < peersStringLen; i += peerSize {
 				IpAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
 				Port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
-				peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.InfoHash}
+				peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.infoHash}
 				j++
 			}
 
@@ -121,7 +119,7 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
 				}
 
 				peersArr[index] = Peer{
-					InfoHash:  t.InfoHash,
+					InfoHash:  t.infoHash,
 					IpAddress: peerDict["ip"].(string),
 					Port:      uint16(peerDict["port"].(int)),
 				}
@@ -177,9 +175,9 @@ func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, tran
 	peersArr := make([]Peer, numOfPeers)
 
 	for i, j := 0, 0; i < peersBufferSize; i += peerSize {
-		ipAddresss := fmt.Sprintf("%d.%d.%d.%d", peersBuffer[i], peersBuffer[i+1], peersBuffer[i+2], peersBuffer[i+3])
+		ipAddress := fmt.Sprintf("%d.%d.%d.%d", peersBuffer[i], peersBuffer[i+1], peersBuffer[i+2], peersBuffer[i+3])
 		port := binary.BigEndian.Uint16(peersBuffer[i+4:])
-		peersArr[j] = Peer{InfoHash: tr.InfoHash, IpAddress: ipAddresss, Port: port}
+		peersArr[j] = Peer{InfoHash: tr.infoHash, IpAddress: ipAddress, Port: port}
 		j++
 	}
 
@@ -188,14 +186,14 @@ func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, tran
 
 func (tr *Torrent) sendHTTPAnnounceRequest(trackerURL string) ([]Peer, error) {
 	params := url.Values{}
-	length := tr.Info.Length
+	length := tr.info.length
 
 	if length == 0 {
 		// set length to a random value if the length of the torrent file is not known yet
 		length = 999
 	}
 
-	params.Add("info_hash", string(tr.InfoHash[:]))
+	params.Add("info_hash", string(tr.infoHash[:]))
 	params.Add("peer_id", utils.GenerateRandomString(20, ""))
 	params.Add("port", "6881")
 	params.Add("downloaded", "0")
@@ -312,7 +310,7 @@ func (tr *Torrent) sendUDPAnnounceRequest(trackerUrl string) ([]Peer, error) {
 	binary.BigEndian.PutUint32(reqBuffer[index:], transactionId)
 	index += 4
 
-	index += copy(reqBuffer[index:], tr.InfoHash[:])
+	index += copy(reqBuffer[index:], tr.infoHash[:])
 	index += copy(reqBuffer[index:], []byte(peerId))
 
 	binary.BigEndian.PutUint64(reqBuffer[index:], 0)
@@ -474,52 +472,4 @@ func (tr *Torrent) sendAnnounceRequest(trackerUrl string) ([]Peer, error) {
 		}
 	}
 
-}
-
-func (tr *Torrent) startAnnouncer(ctx context.Context) {
-	// todo: make this function run in a interval
-	// todo: handle failed trackers
-	const announceInterval = 3 * time.Second
-	ticker := time.NewTicker(announceInterval)
-
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			{
-				// todo: notify trackers that we're stopping?
-				return
-			}
-
-		case <-ticker.C:
-			{
-				var wg sync.WaitGroup
-
-				maxConcurrency := 5
-				semaphore := make(chan struct{}, maxConcurrency)
-
-				for trackerUrl := range tr.trackers.Entries() {
-					wg.Add(1)
-					semaphore <- struct{}{}
-
-					go func() {
-						defer func() { <-semaphore }()
-						defer wg.Done()
-
-						peers, err := tr.sendAnnounceRequest(trackerUrl)
-
-						if err != nil {
-							fmt.Println(err.Error())
-							return
-						}
-
-						tr.incomingPeersCh <- peers
-					}()
-				}
-
-				wg.Wait()
-			}
-		}
-	}
 }

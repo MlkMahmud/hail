@@ -14,13 +14,15 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/MlkMahmud/hail/bencode"
 	"github.com/MlkMahmud/hail/utils"
 )
 
-type File struct {
+type file struct {
 	torrent *Torrent
 
 	Length int
@@ -31,25 +33,28 @@ type File struct {
 	pieceStartIndex int
 }
 
-type TorrentInfo struct {
-	Files  []File
-	Length int
-	Name   string
-	Pieces []Piece
+type torrentInfo struct {
+	files  []file
+	length int
+	name   string
+	pieces []Piece
 }
 
-type TorrentStatus int
+type torrentStatus int
 
 const (
-	Connecting TorrentStatus = iota
-	Downloading
-	Finished
-	Seeding
+	connecting torrentStatus = iota
+	downloading
+	finished
+	seeding
 )
 
 type Torrent struct {
-	Info     TorrentInfo
-	InfoHash [sha1.Size]byte
+	info     *torrentInfo
+	infoHash [sha1.Size]byte
+
+	ctx        context.Context
+	cancelFunc context.CancelFunc
 
 	bannedPeers        utils.Set
 	bannedPeersCh      chan string
@@ -59,8 +64,8 @@ type Torrent struct {
 	maxPeerConnections int
 	peerConnections    map[string]PeerConnection
 	peers              map[string]Peer
-	status             TorrentStatus
-	statusCh           chan TorrentStatus
+	status             torrentStatus
+	statusCh           chan torrentStatus
 	trackers           utils.Set
 }
 
@@ -110,17 +115,15 @@ func parseAnnounceList(list any) (*utils.Set, error) {
 	return trackers, nil
 }
 
-func parseFilesList(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
-	var torrentInfo TorrentInfo
-
+func parseFilesList(infoDict map[string]any, tr Torrent) (*torrentInfo, error) {
 	filesList, ok := infoDict["files"].([]any)
 
 	if !ok {
-		return torrentInfo, fmt.Errorf("expected 'files' property to be a list, but received '%T'", filesList)
+		return nil, fmt.Errorf("expected 'files' property to be a list, but received '%T'", filesList)
 	}
 
 	numOfFiles := len(filesList)
-	files := make([]File, numOfFiles)
+	files := make([]file, numOfFiles)
 
 	pieceLength := infoDict["piece length"].(int)
 	pieces := infoDict["pieces"].(string)
@@ -130,33 +133,33 @@ func parseFilesList(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
 	piecesIndex := 0
 
 	for i := range numOfFiles {
-		file, ok := filesList[i].(map[string]any)
+		entry, ok := filesList[i].(map[string]any)
 		isLastFile := i == (numOfFiles - 1)
 
 		if !ok {
-			return torrentInfo, fmt.Errorf("files list contains an invalid entry at index '%d'", i)
+			return nil, fmt.Errorf("files list contains an invalid entry at index '%d'", i)
 		}
 
-		if _, ok := file["length"].(int); !ok {
-			return torrentInfo, fmt.Errorf("files list entry at index '%d' contains an invalid 'length' property", i)
+		if _, ok := entry["length"].(int); !ok {
+			return nil, fmt.Errorf("files list entry at index '%d' contains an invalid 'length' property", i)
 		}
 
-		if _, ok := file["path"].([]any); !ok {
-			return torrentInfo, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property", i)
+		if _, ok := entry["path"].([]any); !ok {
+			return nil, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property", i)
 		}
 
-		paths := file["path"].([]any)
+		paths := entry["path"].([]any)
 		pathList := make([]string, len(paths))
 
 		for index, entry := range paths {
 			if _, ok := entry.(string); !ok {
-				return torrentInfo, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property", i)
+				return nil, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property", i)
 			}
 
 			pathList[index] = entry.(string)
 		}
 
-		fileLength := file["length"].(int)
+		fileLength := entry["length"].(int)
 		path := filepath.Join(pathList...)
 
 		pieceStartIndex := piecesIndex / sha1.Size
@@ -165,10 +168,10 @@ func parseFilesList(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
 		result, err := parsePiecesHashes(fileLength, pieceLength, pieceStartIndex, pieces[piecesIndex:])
 
 		if err != nil {
-			return torrentInfo, fmt.Errorf("failed to parse files list entry at index '%d': %w", i, err)
+			return nil, fmt.Errorf("failed to parse files list entry at index '%d': %w", i, err)
 		}
 
-		files[i] = File{
+		files[i] = file{
 			torrent:         &tr,
 			Length:          fileLength,
 			Name:            filepath.Join(infoDict["name"].(string), path),
@@ -191,25 +194,23 @@ func parseFilesList(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
 		piecesIndex += result.nextPieceStartIndex
 	}
 
-	torrentInfo.Files = files
-	torrentInfo.Pieces = piecesArr
-
-	return torrentInfo, nil
+	return &torrentInfo{
+		files:  files,
+		pieces: piecesArr,
+	}, nil
 }
 
-func parseInfoDict(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
-	var torrentInfo TorrentInfo
-
+func parseInfoDict(infoDict map[string]any, tr Torrent) (*torrentInfo, error) {
 	for key, value := range map[string]any{"name": "", "piece length": 0, "pieces": ""} {
 		if _, exists := infoDict[key]; !exists {
-			return torrentInfo, fmt.Errorf("metainfo 'info' dictionary is missing required property '%s'", key)
+			return nil, fmt.Errorf("metainfo 'info' dictionary is missing required property '%s'", key)
 		}
 
 		expectedType := reflect.TypeOf(value)
 		receivedType := reflect.TypeOf(infoDict[key])
 
 		if receivedType != expectedType {
-			return torrentInfo, fmt.Errorf("expected the '%s' property to be of type '%v', but received '%v'", key, expectedType, receivedType)
+			return nil, fmt.Errorf("expected the '%s' property to be of type '%v', but received '%v'", key, expectedType, receivedType)
 		}
 	}
 
@@ -220,13 +221,13 @@ func parseInfoDict(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
 	}
 
 	if _, ok := infoDict["length"]; !ok {
-		return torrentInfo, fmt.Errorf("metainfo 'info' dictionary must contain a 'files' or 'length' property")
+		return nil, fmt.Errorf("metainfo 'info' dictionary must contain a 'files' or 'length' property")
 	}
 
 	fileLength, ok := infoDict["length"].(int)
 
 	if !ok {
-		return torrentInfo, fmt.Errorf("'length' property of metainfo info dictionary must be an integer not %T", fileLength)
+		return nil, fmt.Errorf("'length' property of metainfo info dictionary must be an integer not %T", fileLength)
 	}
 
 	pieceLength := infoDict["piece length"].(int)
@@ -236,10 +237,10 @@ func parseInfoDict(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
 	result, err := parsePiecesHashes(fileLength, pieceLength, pieceOffset, piecesHashes)
 
 	if err != nil {
-		return torrentInfo, fmt.Errorf("failed to parse pieces hashes: %w", err)
+		return nil, fmt.Errorf("failed to parse pieces hashes: %w", err)
 	}
 
-	files := []File{{
+	files := []file{{
 		torrent:         &tr,
 		Length:          fileLength,
 		Name:            infoDict["name"].(string),
@@ -248,9 +249,9 @@ func parseInfoDict(infoDict map[string]any, tr Torrent) (TorrentInfo, error) {
 		pieceStartIndex: 0,
 	}}
 
-	return TorrentInfo{
-		Files:  files,
-		Pieces: result.pieces,
+	return &torrentInfo{
+		files:  files,
+		pieces: result.pieces,
 	}, nil
 }
 
@@ -332,16 +333,20 @@ func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 		return torrent, err
 	}
 
-	torrent.Info = TorrentInfo{
-		Name: torrentName,
-	}
-	torrent.InfoHash = infoHash
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	torrent.ctx = ctx
+	torrent.cancelFunc = cancelFunc
+
+	torrent.info = &torrentInfo{name: torrentName}
+	torrent.infoHash = infoHash
 
 	torrent.incomingPeersCh = make(chan []Peer, 1)
+	torrent.maxPeerConnections = 10
 	torrent.peerConnections = map[string]PeerConnection{}
 	torrent.peers = make(map[string]Peer)
 	torrent.failingPeers = make(map[string]Peer)
-	torrent.statusCh = make(chan TorrentStatus, 1)
+	torrent.statusCh = make(chan torrentStatus, 1)
 	torrent.trackers = *trackers
 
 	return torrent, nil
@@ -400,24 +405,30 @@ func parseTorrentFile(fileContent []byte) (Torrent, error) {
 		return torrent, fmt.Errorf("failed to encode metainfo 'info' dictionary")
 	}
 
-	torrent.Info = torrentInfo
-	torrent.InfoHash = sha1.Sum([]byte(bencodedValue))
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	torrent.ctx = ctx
+	torrent.cancelFunc = cancelFunc
+
+	torrent.info = torrentInfo
+	torrent.infoHash = sha1.Sum([]byte(bencodedValue))
 
 	torrent.incomingPeersCh = make(chan []Peer, 1)
+	torrent.maxPeerConnections = 10
 	torrent.peerConnections = map[string]PeerConnection{}
 	torrent.peers = make(map[string]Peer)
 	torrent.failingPeers = make(map[string]Peer)
-	torrent.statusCh = make(chan TorrentStatus, 1)
+	torrent.statusCh = make(chan torrentStatus, 1)
 	torrent.trackers = *trackers
 
 	return torrent, nil
 }
 
 // Blacklists peers that have experienced multiple piece hash verifications.
-func (tr *Torrent) handleBannedPeers(ctx context.Context) {
+func (tr *Torrent) handleBannedPeers() {
 	for {
 		select {
-		case <-ctx.Done():
+		case <-tr.ctx.Done():
 			{
 				return
 			}
@@ -429,7 +440,7 @@ func (tr *Torrent) handleBannedPeers(ctx context.Context) {
 	}
 }
 
-func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
+func (tr *Torrent) handleIncomingPeers() {
 	for {
 		// todo: handle failed peers
 		select {
@@ -458,7 +469,7 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 				}
 			}
 
-		case <-ctx.Done():
+		case <-tr.ctx.Done():
 			{
 				return
 			}
@@ -466,10 +477,10 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 	}
 }
 
-func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
+func (tr *Torrent) handleStatusUpdate() {
 	for {
 		select {
-		case <-ctx.Done():
+		case <-tr.ctx.Done():
 			{
 				return
 			}
@@ -477,6 +488,54 @@ func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
 		case status := <-tr.statusCh:
 			{
 				tr.status = status
+			}
+		}
+	}
+}
+
+func (tr *Torrent) startAnnouncer() {
+	// todo: make this function run in a interval
+	// todo: handle failed trackers
+	const announceInterval = 3 * time.Second
+	ticker := time.NewTicker(announceInterval)
+
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-tr.ctx.Done():
+			{
+				// todo: notify trackers that we're stopping?
+				return
+			}
+
+		case <-ticker.C:
+			{
+				var wg sync.WaitGroup
+
+				maxConcurrency := 5
+				semaphore := make(chan struct{}, maxConcurrency)
+
+				for trackerUrl := range tr.trackers.Entries() {
+					wg.Add(1)
+					semaphore <- struct{}{}
+
+					go func() {
+						defer func() { <-semaphore }()
+						defer wg.Done()
+
+						peers, err := tr.sendAnnounceRequest(trackerUrl)
+
+						if err != nil {
+							fmt.Println(err.Error())
+							return
+						}
+
+						tr.incomingPeersCh <- peers
+					}()
+				}
+
+				wg.Wait()
 			}
 		}
 	}
@@ -563,13 +622,10 @@ func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
 // }
 
 func (t *Torrent) Start() {
-	ctx, cancelFunc := context.WithCancel(context.Background())
-
-	// todo: make "ctx" a property of the torrent?
-	go t.startAnnouncer(ctx)
-	go t.handleIncomingPeers(ctx)
-	go t.handleStatusUpdate(ctx)
-	go t.handleBannedPeers(ctx)
+	go t.startAnnouncer()
+	go t.handleIncomingPeers()
+	go t.handleStatusUpdate()
+	go t.handleBannedPeers()
 
 	// todo: move this signal handler to a higher-level (session)
 	signalsCh := make(chan os.Signal, 1)
@@ -577,16 +633,19 @@ func (t *Torrent) Start() {
 
 	<-signalsCh
 	fmt.Println("shutting down...")
-	cancelFunc()
-	t.stop()
+	t.Stop()
 	fmt.Println("successfully closed all peer connections.")
 }
 
-func (t *Torrent) stop() {
+// Cancels all active goroutines and gracefully shuts down all active peer connections
+func (t *Torrent) Stop() {
+	t.cancelFunc()
+
 	for _, connection := range t.peerConnections {
-		// todo: use a context object to cancel all active goroutines.
 		connection.Close()
 	}
+
+	// todo: close channels?
 }
 
 func NewTorrent(src string) (Torrent, error) {
