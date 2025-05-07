@@ -219,6 +219,46 @@ func (p *PeerConnection) hasPiece(pieceIndex int) bool {
 	return p.availablePieces[pieceIndex]
 }
 
+func (p *PeerConnection) downloadMetadata() ([]byte, error) {
+	buffer := []byte{}
+	hasDownloadedAllPieces := false
+	index := 0
+
+	for hasDownloadedAllPieces != true {
+		metadataPiece, err := p.downloadMetadataPiece(index)
+
+		if err != nil {
+			return nil, err
+		}
+
+		buffer = append(buffer, metadataPiece...)
+		index += 1
+
+		//  If it is not the last piece of the metadata, it MUST be 16kiB (BlockSize).
+		// todo: get metadata size from extension handshake request.
+		if len(metadataPiece) != BlockSize {
+			hasDownloadedAllPieces = true
+			break
+		}
+	}
+
+	return buffer, nil
+}
+
+func (p *PeerConnection) downloadMetadataPiece(pieceIndex int) ([]byte, error) {
+	if err := p.sendMetadataRequestMessage(pieceIndex); err != nil {
+		return nil, err
+	}
+
+	piece, err := p.receiveMetadataMessage()
+
+	if err != nil {
+		return nil, err
+	}
+
+	return piece, nil
+}
+
 func (p *PeerConnection) parseBitFieldMessage() error {
 	message, err := p.receiveMessage(Bitfield)
 
@@ -479,6 +519,12 @@ func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 	return nil
 }
 
+func (p *PeerConnection) supportsExtension(ext Extension) bool {
+	_, ok := p.PeerExtensions[ext]
+
+	return ok
+}
+
 func (p *PeerConnection) Close() {
 	if p.Conn != nil {
 		p.Conn.Close()
@@ -560,13 +606,13 @@ func (p *PeerConnection) InitConnection() error {
 		return err
 	}
 
-	if err := p.completeExtensionHandshake(); err != nil {
-		return err
-	}
-
 	if err := p.parseBitFieldMessage(); err != nil {
 		fmt.Printf("failed to receive 'Bitfield' message from peer: %v", err)
 		return nil
+	}
+
+	if err := p.completeExtensionHandshake(); err != nil {
+		return err
 	}
 
 	return nil
