@@ -183,7 +183,7 @@ func (tr *Torrent) handleIncomingPeers() {
 
 					select {
 					case <-tr.metadataDownloaderCtx.Done():
-						break
+						continue
 					case tr.metadataPeersCh <- *peerConnection:
 					}
 				}
