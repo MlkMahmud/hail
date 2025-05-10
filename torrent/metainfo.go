@@ -238,9 +238,13 @@ func parseMetaInfo(data []byte) (Torrent, error) {
 	}
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
+	metadataCtx, metadataCancelFn := context.WithCancel(context.Background())
 
 	torrent.ctx = ctx
 	torrent.cancelFunc = cancelFunc
+
+	torrent.metadataDownloaderCtx = metadataCtx
+	torrent.metadataDownloaderCancelFunc = metadataCancelFn
 
 	torrent.info = torrentInfo
 	torrent.infoHash = sha1.Sum([]byte(bencodedValue))
@@ -248,11 +252,15 @@ func parseMetaInfo(data []byte) (Torrent, error) {
 	torrent.incomingPeersCh = make(chan []Peer, 1)
 	torrent.maxPeerConnections = 10
 	torrent.metadataPeersCh = make(chan PeerConnection, 10)
-	torrent.peerConnections = map[string]PeerConnection{}
+	torrent.peerConnectionPool = newPeerConnectionPool()
 	torrent.peers = make(map[string]Peer)
 	torrent.failingPeers = make(map[string]Peer)
-	torrent.statusCh = make(chan torrentStatus, 1)
+
+	torrent.failedPiecesCh = make(chan Piece, 10)
+	torrent.queuedPiecesCh = make(chan Piece, 10)
+
 	torrent.trackers = *trackers
+	torrent.statusCh = make(chan torrentStatus, 1)
 
 	return torrent, nil
 }

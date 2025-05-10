@@ -1,61 +1,87 @@
 package torrent
 
 import (
-	"runtime"
+	"context"
+	"fmt"
 	"sync"
+	"time"
+
+	"github.com/MlkMahmud/hail/utils"
 )
 
-type PeerConnectionPool struct {
-	Connections map[string]PeerConnection
-	mutex       sync.Mutex
+// todo: gracefully drain connections
+
+type peerConnectionPool struct {
+	activeConnectionIds utils.Set
+	connections         map[string]PeerConnection
+	mutex               sync.Mutex
 }
 
-const (
-	maxNumOfPeerConnections = 30
-)
-
-func NewPeerConnectionPool() *PeerConnectionPool {
-	return new(PeerConnectionPool)
+func newPeerConnectionPool() *peerConnectionPool {
+	return &peerConnectionPool{
+		activeConnectionIds: *utils.NewSet(),
+		connections:         make(map[string]PeerConnection),
+	}
 }
 
-func (p *PeerConnectionPool) AddPeerConnectionToPool(peerConnection PeerConnection) {
+func (p *peerConnectionPool) addConnection(peerConnection PeerConnection) {
 	p.mutex.Lock()
-	p.Connections[peerConnection.PeerAddress] = peerConnection
+	p.connections[peerConnection.peerAddress] = peerConnection
 	p.mutex.Unlock()
 }
 
-func (p *PeerConnectionPool) DrainConnectionPool() {
-	for _, peerConnection := range p.Connections {
+func (p *peerConnectionPool) closeConnections() {
+	for _, peerConnection := range p.connections {
 		peerConnection.Close()
 	}
 
-	p.Connections = make(map[string]PeerConnection)
+	p.connections = make(map[string]PeerConnection)
 }
 
-func (p *PeerConnectionPool) InitPeerConnectionPool(peers []Peer, numOfPieces int) {
-	peerConnectionPoolSize := min(len(peers), 2*runtime.NumCPU(), maxNumOfPeerConnections)
-	p.Connections = make(map[string]PeerConnection)
+func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (PeerConnection, error) {
+	for {
+		p.mutex.Lock()
 
-	for i := range peerConnectionPoolSize {
-		peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peers[i], NumOfPieces: numOfPieces})
-		p.Connections[peerConnection.PeerAddress] = *peerConnection
+		for _, peerConnection := range p.connections {
+			if !p.activeConnectionIds.Contains(peerConnection.peerAddress) {
+				p.activeConnectionIds.Add(peerConnection.peerAddress)
+				p.mutex.Unlock()
+				return peerConnection, nil
+			}
+		}
+
+		p.mutex.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return PeerConnection{}, fmt.Errorf("context canceled: %w", ctx.Err())
+		default:
+			// todo: addd trigger to find more peers
+			time.Sleep(2 * time.Second)
+		}
 	}
 }
 
-func (p *PeerConnectionPool) RemovePeerConnectionFromPool(peerAddress string, onConnectionPoolDrained func()) {
+func (p *peerConnectionPool) releaseActiveConnection(pc PeerConnection) {
 	p.mutex.Lock()
-	delete(p.Connections, peerAddress)
+	defer p.mutex.Unlock()
 
-	if len(p.Connections) == 0 && onConnectionPoolDrained != nil {
-		onConnectionPoolDrained()
+	if !p.activeConnectionIds.Contains(pc.peerAddress) {
+		return
 	}
 
+	p.activeConnectionIds.Remove(pc.peerAddress)
+}
+
+func (p *peerConnectionPool) removeConnection(peerAddress string) {
+	p.mutex.Lock()
+	delete(p.connections, peerAddress)
 	p.mutex.Unlock()
 }
 
-func (p *PeerConnectionPool) Size() int {
+func (p *peerConnectionPool) size() int {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	num := len(p.Connections)
+	num := len(p.connections)
 	return num
 }

@@ -21,17 +21,17 @@ type BlockRequestResult struct {
 
 type PeerConnection struct {
 	availablePieces    []bool
-	Conn               net.Conn
-	FailedAttempts     int
-	InfoHash           [sha1.Size]byte
-	PeerAddress        string
-	PeerId             string
-	PeerExtensions     map[Extension]uint8
-	SupportsExtensions bool
-	Unchoked           bool
+	conn               net.Conn
+	failedAttempts     int
+	infoHash           [sha1.Size]byte
+	peerAddress        string
+	peerId             string
+	peerExtensions     map[Extension]uint8
+	supportsExtensions bool
+	unchoked           bool
 }
 
-type PeerConnectionConfig struct {
+type peerConnectionConfig struct {
 	Peer        Peer
 	NumOfPieces int
 }
@@ -54,14 +54,14 @@ const (
 )
 
 const (
-	MaxFailedAttempts = 3
+	peerConnectionMaxFailedAttempts = 3
 )
 
-func NewPeerConnection(config PeerConnectionConfig) *PeerConnection {
+func NewPeerConnection(config peerConnectionConfig) *PeerConnection {
 	return &PeerConnection{
 		availablePieces: make([]bool, config.NumOfPieces),
-		InfoHash:        config.Peer.InfoHash,
-		PeerAddress:     fmt.Sprintf("%s:%d", config.Peer.IpAddress, config.Peer.Port),
+		infoHash:        config.Peer.InfoHash,
+		peerAddress:     fmt.Sprintf("%s:%d", config.Peer.IpAddress, config.Peer.Port),
 	}
 }
 
@@ -100,16 +100,16 @@ func (p *PeerConnection) completeBaseHandshake() error {
 	index += 1
 
 	index += copy(messageBuffer[index:], make([]byte, 2))
-	index += copy(messageBuffer[index:], p.InfoHash[:])
+	index += copy(messageBuffer[index:], p.infoHash[:])
 	index += copy(messageBuffer[index:], peerId[:])
 
-	if _, err := utils.ConnWriteFull(p.Conn, messageBuffer, 0); err != nil {
+	if _, err := utils.ConnWriteFull(p.conn, messageBuffer, 0); err != nil {
 		return fmt.Errorf("failed to send base handshake message: %w", err)
 	}
 
 	responseBuffer := make([]byte, handshakeMessageLen)
 
-	if _, err := utils.ConnReadFull(p.Conn, responseBuffer, 0); err != nil {
+	if _, err := utils.ConnReadFull(p.conn, responseBuffer, 0); err != nil {
 		return fmt.Errorf("failed to receive base handshake response: %w", err)
 	}
 
@@ -127,23 +127,23 @@ func (p *PeerConnection) completeBaseHandshake() error {
 		return fmt.Errorf("expected protocol string to equal '%s', but got '%s'", pstr, receivedPstr)
 	}
 
-	if receivedInfoHash := responseBuffer[28:48]; !bytes.Equal(receivedInfoHash, p.InfoHash[:]) {
-		return fmt.Errorf("received info hash %v does not match expected info hash %v", receivedInfoHash, p.InfoHash)
+	if receivedInfoHash := responseBuffer[28:48]; !bytes.Equal(receivedInfoHash, p.infoHash[:]) {
+		return fmt.Errorf("received info hash %v does not match expected info hash %v", receivedInfoHash, p.infoHash)
 	}
 
 	//The bit selected for the extension protocol is bit 20th from the right (counting starts at 0). So (reserved_byte[5] & 0x10) is the expression to use for checking if the client supports extended messaging.
 	if reservedByteIndex := 25; bytes.Equal(responseBuffer[reservedByteIndex:reservedByteIndex+1], []byte{byte(0x10)}) {
-		p.SupportsExtensions = true
+		p.supportsExtensions = true
 	}
 
 	peerIdStartIndex := 48
-	p.PeerId = string(responseBuffer[peerIdStartIndex:])
+	p.peerId = string(responseBuffer[peerIdStartIndex:])
 
 	return nil
 }
 
 func (p *PeerConnection) completeExtensionHandshake() error {
-	if !p.SupportsExtensions {
+	if !p.supportsExtensions {
 		return nil
 	}
 
@@ -338,7 +338,7 @@ func (p *PeerConnection) receiveExtensionHandshakeMessage() error {
 		extensions[ext] = uint8(id)
 	}
 
-	p.PeerExtensions = extensions
+	p.peerExtensions = extensions
 
 	return nil
 }
@@ -346,14 +346,14 @@ func (p *PeerConnection) receiveExtensionHandshakeMessage() error {
 func (p *PeerConnection) receiveMessage(messageId MessageId) (*Message, error) {
 	messageLengthBuffer := make([]byte, 4)
 
-	if _, err := utils.ConnReadFull(p.Conn, messageLengthBuffer, 0); err != nil {
+	if _, err := utils.ConnReadFull(p.conn, messageLengthBuffer, 0); err != nil {
 		return nil, err
 	}
 
 	messageLength := binary.BigEndian.Uint32(messageLengthBuffer)
 	messageBuffer := make([]byte, messageLength)
 
-	if _, err := utils.ConnReadFull(p.Conn, messageBuffer, 0); err != nil {
+	if _, err := utils.ConnReadFull(p.conn, messageBuffer, 0); err != nil {
 		return nil, err
 	}
 
@@ -424,7 +424,7 @@ func (p *PeerConnection) receiveMetadataMessage() ([]byte, error) {
 }
 
 func (p *PeerConnection) sendInterestAndAwaitUnchokeMessage() error {
-	if p.Unchoked {
+	if p.unchoked {
 		return nil
 	}
 
@@ -436,7 +436,7 @@ func (p *PeerConnection) sendInterestAndAwaitUnchokeMessage() error {
 		return fmt.Errorf("failed to receive 'Unchoke' message from peer: %w", err)
 	}
 
-	p.Unchoked = true
+	p.unchoked = true
 
 	return nil
 }
@@ -486,7 +486,7 @@ func (p *PeerConnection) sendMessage(messageId MessageId, payload []byte) error 
 	messageBuffer[index] = byte(messageId)
 	copy(messageBuffer[index+1:], payload)
 
-	if _, err := utils.ConnWriteFull(p.Conn, messageBuffer, 0); err != nil {
+	if _, err := utils.ConnWriteFull(p.conn, messageBuffer, 0); err != nil {
 		return err
 	}
 
@@ -507,7 +507,7 @@ func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 	messagePayloadBuffer := make([]byte, extensionMessageIdLength+len(bencodedString))
 
 	index := 0
-	messagePayloadBuffer[index] = byte(p.PeerExtensions[Metadata])
+	messagePayloadBuffer[index] = byte(p.peerExtensions[Metadata])
 
 	index += 1
 	copy(messagePayloadBuffer[index:], []byte(bencodedString))
@@ -520,14 +520,14 @@ func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 }
 
 func (p *PeerConnection) supportsExtension(ext Extension) bool {
-	_, ok := p.PeerExtensions[ext]
+	_, ok := p.peerExtensions[ext]
 
 	return ok
 }
 
 func (p *PeerConnection) Close() {
-	if p.Conn != nil {
-		p.Conn.Close()
+	if p.conn != nil {
+		p.conn.Close()
 	}
 }
 
@@ -538,7 +538,7 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 
 	if !p.hasPiece(piece.Index) {
 		// todo: should this be treated as an error?
-		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.PeerAddress, piece.Index)
+		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.peerAddress, piece.Index)
 	}
 
 	if err := p.sendInterestAndAwaitUnchokeMessage(); err != nil {
@@ -590,17 +590,17 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 }
 
 func (p *PeerConnection) InitConnection() error {
-	if p.Conn != nil {
+	if p.conn != nil {
 		return nil
 	}
 
-	conn, err := net.DialTimeout("tcp", p.PeerAddress, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", p.peerAddress, 5*time.Second)
 
 	if err != nil {
 		return fmt.Errorf("failed to initialized peer connection: %w", err)
 	}
 
-	p.Conn = conn
+	p.conn = conn
 
 	if err := p.completeBaseHandshake(); err != nil {
 		return err

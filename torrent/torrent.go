@@ -53,7 +53,7 @@ type Torrent struct {
 	cancelFunc context.CancelFunc
 
 	metadataDownloaderCtx      context.Context
-	metadataDownloadCancelFunc context.CancelFunc
+	metadataDownloaderCancelFunc context.CancelFunc
 
 	bannedPeers        utils.Set
 	bannedPeersCh      chan string
@@ -61,8 +61,12 @@ type Torrent struct {
 	incomingPeersCh    chan []Peer
 	maxPeerConnections int
 	metadataPeersCh    chan PeerConnection
-	peerConnections    map[string]PeerConnection
+	peerConnectionPool *peerConnectionPool
 	peers              map[string]Peer
+
+	downloadedPieces chan DownloadedPiece
+	failedPiecesCh   chan Piece
+	queuedPiecesCh   chan Piece
 
 	failingTrackers utils.Set
 	trackers        utils.Set
@@ -133,6 +137,51 @@ func NewTorrent(src string) (Torrent, error) {
 	}
 }
 
+/*
+Enqueues pieces of the torrent for processing. It ensures that
+all pieces from the torrent's metadata are added to the queuedPiecesCh channel.
+If a piece fails during processing, it is re-enqueued from the failedPiecesCh
+channel. The function requires that the torrent metadata (tr.info) is
+available; otherwise, it will panic.
+*/
+func (tr *Torrent) enquePieces() {
+	if tr.metadataDownloaderCtx == nil {
+		panic("metadataDownloaderCtx is not initialized")
+	}
+
+	select {
+	case <-tr.metadataDownloaderCtx.Done():
+		break
+	case <-tr.ctx.Done():
+		return
+	}
+
+	if tr.info == nil {
+		panic("torrent metadata is not available; cannot enqueue pieces")
+	}
+
+	for _, piece := range tr.info.pieces {
+		select {
+		case <-tr.ctx.Done():
+			return
+		case failedPiece := <-tr.failedPiecesCh:
+			tr.queuedPiecesCh <- failedPiece
+		default:
+			tr.queuedPiecesCh <- piece
+		}
+	}
+
+	// Continuously listen for failed pieces and re-enqueue them until the context is canceled.
+	for {
+		select {
+		case <-tr.ctx.Done():
+			return
+		case failedPiece := <-tr.failedPiecesCh:
+			tr.queuedPiecesCh <- failedPiece
+		}
+	}
+}
+
 // Blacklists peers that have experienced multiple piece hash verifications.
 func (tr *Torrent) handleBannedPeers() {
 	for {
@@ -156,17 +205,18 @@ func (tr *Torrent) handleIncomingPeers() {
 		case peers := <-tr.incomingPeersCh:
 			{
 				for _, peer := range peers {
-					if len(tr.peerConnections) >= tr.maxPeerConnections {
+					if tr.peerConnectionPool.size() >= tr.maxPeerConnections {
+						// todo: place a limit on the number of idle peers
 						tr.peers[peer.String()] = peer
 						break
 					}
 
-					if _, ok := tr.peerConnections[peer.String()]; ok {
+					if _, ok := tr.peerConnectionPool.connections[peer.String()]; ok {
 						fmt.Println("peer already exists in connection pool")
 						continue
 					}
 
-					peerConnection := NewPeerConnection(PeerConnectionConfig{Peer: peer})
+					peerConnection := NewPeerConnection(peerConnectionConfig{Peer: peer})
 
 					if err := peerConnection.InitConnection(); err != nil {
 						fmt.Printf("failed to connect to peer: %s: %v\n", peer, err)
@@ -175,7 +225,7 @@ func (tr *Torrent) handleIncomingPeers() {
 					}
 
 					fmt.Printf("connected to peer: %s\n", peer)
-					tr.peerConnections[peer.String()] = *peerConnection
+					tr.peerConnectionPool.addConnection(*peerConnection)
 
 					if !peerConnection.supportsExtension(Metadata) || tr.metadataDownloaderCtx == nil {
 						continue
@@ -213,6 +263,26 @@ func (tr *Torrent) handleStatusUpdate() {
 	}
 }
 
+// startAnnouncer starts the announcer routine for the Torrent instance.
+// This function periodically sends announce requests to the trackers associated
+// with the torrent to retrieve peer information. It runs in an interval defined
+// by `announceInterval` and handles concurrency for sending requests to multiple
+// trackers.
+//
+// The function uses a ticker to trigger periodic announce requests and listens
+// for a cancellation signal from the context (`tr.ctx.Done()`) to gracefully stop
+// the announcer. When stopping, it optionally allows for notifying trackers
+// about the stop event (currently marked as a TODO).
+//
+// Key Features:
+// - Runs announce requests at a fixed interval.
+// - Handles failed tracker requests gracefully by logging errors.
+// - Limits the number of concurrent requests to trackers using a semaphore.
+// - Sends retrieved peer information to the `incomingPeersCh` channel.
+//
+// Note: This function assumes that `tr.trackers.Entries()` provides a list of
+// tracker URLs and that `tr.sendAnnounceRequest(trackerUrl)` handles the actual
+// announce request logic, returning a list of peers or an error.
 func (tr *Torrent) startAnnouncer() {
 	// todo: make this function run in a interval
 	// todo: handle failed trackers
@@ -288,10 +358,6 @@ func (tr *Torrent) startMetadataDownloader() {
 		return
 	}
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	tr.metadataDownloaderCtx = ctx
-	tr.metadataDownloadCancelFunc = cancelFunc
-
 	for {
 		select {
 		case <-tr.ctx.Done():
@@ -332,11 +398,93 @@ func (tr *Torrent) startMetadataDownloader() {
 				}
 
 				tr.info = info
-				tr.metadataDownloadCancelFunc()
+				tr.metadataDownloaderCancelFunc()
 			}
 		}
 	}
 }
+
+// func (tr *Torrent) startPieceDownloader() {
+// 	maxConcurrency := 10
+// 	sem := utils.NewSemaphore(maxConcurrency)
+
+// 	var wg sync.WaitGroup
+
+// 	for {
+// 		select {
+// 		case <-tr.ctx.Done():
+// 			{
+// 				return
+// 			}
+
+// 		case piece := <-tr.queuedPiecesCh:
+// 			{
+				
+// 				/*
+// 								get piece from the queue and attempt. Get a peer connection from queue and attempt to dowload from
+
+// 								get a peer connection from the peer connection channel, this must content with the cancel of the max torrent function
+
+// 								select {
+// 									case pc := <- tr.connectionPool.connections: {}
+// 									case <- tr.ctx.Done(): {
+// 										return
+// 									}
+// 								}
+
+// 				*/
+// 			}
+// 		}
+// 	}
+
+// 	// todo: make 'peerConnections' a channel ?
+// 	for _, peerconn := range tr.peerConnections {
+// 		sem.Acquire()
+// 		wg.Add(1)
+
+// 		go func(pc PeerConnection) {
+// 			defer sem.Release()
+// 			defer wg.Done()
+
+// 			for {
+// 				select {
+// 				case <-tr.ctx.Done():
+// 					return
+// 				case piece := <-tr.queuedPiecesCh:
+// 					{
+// 						// todo: handle errors caused by peer not having the given piece
+// 						downloadedPiece, err := pc.DownloadPiece(piece)
+
+// 						if err != nil && pc.failedAttempts >= peerConnectionMaxFailedAttempts {
+// 							// todo: send to 'failedPeersCh"
+// 							return
+// 						}
+
+// 						if err != nil {
+// 							pc.failedAttempts += 1
+// 							tr.failedPiecesCh <- piece
+// 							continue
+// 						}
+
+// 						if err := downloadedPiece.CheckHashIntegrity(); err != nil {
+// 							// todo: do we simple increment the fail count for peer that send piece that fail the hash check?
+// 							pc.failedAttempts += 1
+// 							tr.failedPiecesCh <- piece
+// 							continue
+// 						}
+
+// 						tr.downloadedPieces <- *downloadedPiece
+// 					}
+// 					// todo: listen for download completetion
+// 				}
+// 			}
+
+// 		}(peerconn)
+
+// 		wg.Wait()
+// 	}
+
+// }
 
 func (t *Torrent) Start() {
 	go t.startAnnouncer()
@@ -344,6 +492,8 @@ func (t *Torrent) Start() {
 	go t.handleStatusUpdate()
 	go t.handleBannedPeers()
 	go t.startMetadataDownloader()
+	go t.enquePieces()
+	// go t.startPieceDownloader()
 
 	// todo: move this signal handler to a higher-level (session)
 	signalsCh := make(chan os.Signal, 1)
@@ -359,10 +509,37 @@ func (t *Torrent) Start() {
 // Cancels all active goroutines and gracefully shuts down all active peer connections
 func (t *Torrent) Stop() {
 	t.cancelFunc()
-
-	for _, connection := range t.peerConnections {
-		connection.Close()
-	}
-
+	t.peerConnectionPool.closeConnections()
 	// todo: close channels?
 }
+
+/*
+	piece downloader waits on the main "ctx" and the "metadataDownloaderCtx" contexts.
+	When the main context is cancelled, it stops downloading pieces and closes all peer connections.
+	When the metadata downloader context is cancelled, it starts downloading pieces.
+
+
+	Scenario 1:
+		goroutine a:
+			loops through list of pieces for the torrent and adds them to a channel (maximum 10 at a time).
+
+		goroutine b:
+			this is the downloader. It loops through the download channel and attempts to download pieces
+			if successful, it places the downloaded piece on another channel which is used by the piece write
+			if it fails, it needs to place the piece request back on the source channel so it can be downloaded again.
+
+		goroutine c:
+			receives piece response and attempts to write the downloaded data to storage.
+			if it fails, and the error can be deemed as a transient error, retry the write with backoff.
+			if it fails after a maximum number of tries or it's a critical error stop the torrent.
+
+			if it succeeds update the total number of pieces downloaded counter
+			if we've downloaded all pieces cancel the "piecedownload" ctx forcing the first two goroutines to exit.
+
+		questions:
+			how do we sync piece request movement between goroutine a and b.
+
+			if gorutine a is blocked because it has downloaded add a max number of requests
+			but goroutines b needs to put a failed request back on the queue what happens?
+
+*/
