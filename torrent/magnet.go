@@ -1,7 +1,6 @@
 package torrent
 
 import (
-	"context"
 	"crypto/sha1"
 	"encoding/base32"
 	"encoding/hex"
@@ -84,24 +83,19 @@ func parseMagnetURL(magnetURL *url.URL) (Torrent, error) {
 		trackers.Add(tr)
 	}
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	metadataCtx, metadataCancelFn := context.WithCancel(context.Background())
-
-	torrent.ctx = ctx
-	torrent.cancelFunc = cancelFunc
-
-	torrent.metadataDownloaderCtx = metadataCtx
-	torrent.metadataDownloaderCancelFunc = metadataCancelFn
-
 	torrent.infoHash = infoHash
+
+	torrent.metadataDownloadCompletedCh = make(chan struct{}, 1)
+	torrent.piecesDownloadCompleteCh = make(chan struct{}, 1)
 
 	torrent.incomingPeersCh = make(chan []Peer, 1)
 	torrent.maxPeerConnections = 10
-	torrent.metadataPeersCh = make(chan PeerConnection, 10)
+	torrent.metadataPeersCh = make(chan peerConnection, 10)
 	torrent.peerConnectionPool = newPeerConnectionPool()
 	torrent.peers = make(map[string]Peer)
 	torrent.failingPeers = make(map[string]Peer)
 
+	torrent.downloadedPieces = make(chan DownloadedPiece, 10)
 	torrent.failedPiecesCh = make(chan Piece, 10)
 	torrent.queuedPiecesCh = make(chan Piece, 10)
 

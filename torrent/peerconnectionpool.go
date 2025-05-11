@@ -13,48 +13,49 @@ import (
 
 type peerConnectionPool struct {
 	activeConnectionIds utils.Set
-	connections         map[string]PeerConnection
+	connections         map[string]peerConnection
 	mutex               sync.Mutex
 }
 
 func newPeerConnectionPool() *peerConnectionPool {
 	return &peerConnectionPool{
 		activeConnectionIds: *utils.NewSet(),
-		connections:         make(map[string]PeerConnection),
+		connections:         make(map[string]peerConnection),
 	}
 }
 
-func (p *peerConnectionPool) addConnection(peerConnection PeerConnection) {
+func (p *peerConnectionPool) addConnection(pc peerConnection) {
 	p.mutex.Lock()
-	p.connections[peerConnection.peerAddress] = peerConnection
+	p.connections[pc.peerAddress] = pc
 	p.mutex.Unlock()
 }
 
 func (p *peerConnectionPool) closeConnections() {
-	for _, peerConnection := range p.connections {
-		peerConnection.Close()
+	for _, pc := range p.connections {
+		pc.close()
 	}
 
-	p.connections = make(map[string]PeerConnection)
+	p.connections = make(map[string]peerConnection)
 }
 
-func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (PeerConnection, error) {
+func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (peerConnection, error) {
 	for {
 		p.mutex.Lock()
 
-		for _, peerConnection := range p.connections {
-			if !p.activeConnectionIds.Contains(peerConnection.peerAddress) {
-				p.activeConnectionIds.Add(peerConnection.peerAddress)
+		for id, pc := range p.connections {
+			if !p.activeConnectionIds.Contains(id) {
+				p.activeConnectionIds.Add(id)
 				p.mutex.Unlock()
-				return peerConnection, nil
+				return pc, nil
 			}
 		}
 
 		p.mutex.Unlock()
 
+		fmt.Println("failed to get idle connection")
 		select {
 		case <-ctx.Done():
-			return PeerConnection{}, fmt.Errorf("context canceled: %w", ctx.Err())
+			return peerConnection{}, fmt.Errorf("context canceled: %w", ctx.Err())
 		default:
 			// todo: addd trigger to find more peers
 			time.Sleep(2 * time.Second)
@@ -62,7 +63,7 @@ func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (PeerConnect
 	}
 }
 
-func (p *peerConnectionPool) releaseActiveConnection(pc PeerConnection) {
+func (p *peerConnectionPool) releaseActiveConnection(pc peerConnection) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -75,6 +76,11 @@ func (p *peerConnectionPool) releaseActiveConnection(pc PeerConnection) {
 
 func (p *peerConnectionPool) removeConnection(peerAddress string) {
 	p.mutex.Lock()
+
+	if p.activeConnectionIds.Contains(peerAddress) {
+		p.activeConnectionIds.Remove(peerAddress)
+	}
+
 	delete(p.connections, peerAddress)
 	p.mutex.Unlock()
 }

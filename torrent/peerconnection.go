@@ -14,13 +14,13 @@ import (
 	"github.com/MlkMahmud/hail/utils"
 )
 
-type BlockRequestResult struct {
+type blockRequestResult struct {
 	block Block
 	err   error
 }
 
-type PeerConnection struct {
-	availablePieces    []bool
+type peerConnection struct {
+	bitfield           []bool
 	conn               net.Conn
 	failedAttempts     int
 	infoHash           [sha1.Size]byte
@@ -31,12 +31,11 @@ type PeerConnection struct {
 	unchoked           bool
 }
 
-type peerConnectionConfig struct {
-	Peer        Peer
-	NumOfPieces int
+type peerConnectionInitConfig struct {
+	bitfieldSize int
 }
 
-type ReadWriteMutex struct {
+type readWriteMutex struct {
 	writer sync.Mutex
 	reader sync.Mutex
 }
@@ -57,11 +56,10 @@ const (
 	peerConnectionMaxFailedAttempts = 3
 )
 
-func NewPeerConnection(config peerConnectionConfig) *PeerConnection {
-	return &PeerConnection{
-		availablePieces: make([]bool, config.NumOfPieces),
-		infoHash:        config.Peer.InfoHash,
-		peerAddress:     fmt.Sprintf("%s:%d", config.Peer.IpAddress, config.Peer.Port),
+func newPeerConnection(pe Peer) *peerConnection {
+	return &peerConnection{
+		infoHash:    pe.InfoHash,
+		peerAddress: fmt.Sprintf("%s:%d", pe.IpAddress, pe.Port),
 	}
 }
 
@@ -87,7 +85,7 @@ func generateBlockRequestPayload(block Block) []byte {
 	return messageBuffer
 }
 
-func (p *PeerConnection) completeBaseHandshake() error {
+func (p *peerConnection) completeBaseHandshake() error {
 	peerId := []byte(utils.GenerateRandomString(20, ""))
 	messageBuffer := make([]byte, handshakeMessageLen)
 	messageBuffer[0] = byte(pstrLen)
@@ -142,7 +140,7 @@ func (p *PeerConnection) completeBaseHandshake() error {
 	return nil
 }
 
-func (p *PeerConnection) completeExtensionHandshake() error {
+func (p *peerConnection) completeExtensionHandshake() error {
 	if !p.supportsExtensions {
 		return nil
 	}
@@ -158,7 +156,7 @@ func (p *PeerConnection) completeExtensionHandshake() error {
 	return nil
 }
 
-func (p *PeerConnection) downloadBlock(block Block, resultsQueue chan<- BlockRequestResult, mutex *ReadWriteMutex) {
+func (p *peerConnection) downloadBlock(block Block, resultsQueue chan<- blockRequestResult, mutex *readWriteMutex) {
 	retries := 2
 
 	var downloadedBlock Block
@@ -205,26 +203,26 @@ func (p *PeerConnection) downloadBlock(block Block, resultsQueue chan<- BlockReq
 		break
 	}
 
-	resultsQueue <- BlockRequestResult{
+	resultsQueue <- blockRequestResult{
 		block: downloadedBlock,
 		err:   mainError,
 	}
 }
 
-func (p *PeerConnection) hasPiece(pieceIndex int) bool {
-	if pieceIndex < 0 || pieceIndex >= len(p.availablePieces) {
+func (p *peerConnection) hasPiece(pieceIndex int) bool {
+	if pieceIndex < 0 || pieceIndex >= len(p.bitfield) {
 		return false
 	}
 
-	return p.availablePieces[pieceIndex]
+	return p.bitfield[pieceIndex]
 }
 
-func (p *PeerConnection) downloadMetadata() ([]byte, error) {
+func (p *peerConnection) downloadMetadata() ([]byte, error) {
 	buffer := []byte{}
 	hasDownloadedAllPieces := false
 	index := 0
 
-	for hasDownloadedAllPieces != true {
+	for !hasDownloadedAllPieces {
 		metadataPiece, err := p.downloadMetadataPiece(index)
 
 		if err != nil {
@@ -245,7 +243,7 @@ func (p *PeerConnection) downloadMetadata() ([]byte, error) {
 	return buffer, nil
 }
 
-func (p *PeerConnection) downloadMetadataPiece(pieceIndex int) ([]byte, error) {
+func (p *peerConnection) downloadMetadataPiece(pieceIndex int) ([]byte, error) {
 	if err := p.sendMetadataRequestMessage(pieceIndex); err != nil {
 		return nil, err
 	}
@@ -259,14 +257,14 @@ func (p *PeerConnection) downloadMetadataPiece(pieceIndex int) ([]byte, error) {
 	return piece, nil
 }
 
-func (p *PeerConnection) parseBitFieldMessage() error {
+func (p *peerConnection) parseBitFieldMessage() error {
 	message, err := p.receiveMessage(Bitfield)
 
 	if err != nil {
 		return fmt.Errorf("failed to receive 'Bitfield' message from peer: %w", err)
 	}
 
-	numOfPieces := len(p.availablePieces)
+	numOfPieces := len(p.bitfield)
 	expectedBitFieldLength := int(math.Ceil(float64(numOfPieces) / byteSize))
 
 	if numOfPieces == 0 {
@@ -285,13 +283,13 @@ func (p *PeerConnection) parseBitFieldMessage() error {
 		mask := int(math.Pow(float64(2), float64(placeValue)))
 
 		isBitSet := (message.Payload[byteArrayIndex] & byte(mask)) != 0
-		p.availablePieces[index] = isBitSet
+		p.bitfield[index] = isBitSet
 	}
 
 	return nil
 }
 
-func (p *PeerConnection) receiveExtensionHandshakeMessage() error {
+func (p *peerConnection) receiveExtensionHandshakeMessage() error {
 	message, err := p.receiveMessage(ExtensionMessageId)
 
 	if err != nil {
@@ -343,7 +341,7 @@ func (p *PeerConnection) receiveExtensionHandshakeMessage() error {
 	return nil
 }
 
-func (p *PeerConnection) receiveMessage(messageId MessageId) (*Message, error) {
+func (p *peerConnection) receiveMessage(messageId MessageId) (*Message, error) {
 	messageLengthBuffer := make([]byte, 4)
 
 	if _, err := utils.ConnReadFull(p.conn, messageLengthBuffer, 0); err != nil {
@@ -366,7 +364,7 @@ func (p *PeerConnection) receiveMessage(messageId MessageId) (*Message, error) {
 	return &Message{Id: receivedMessageId, Payload: messageBuffer[1:]}, nil
 }
 
-func (p *PeerConnection) receiveMetadataMessage() ([]byte, error) {
+func (p *peerConnection) receiveMetadataMessage() ([]byte, error) {
 	message, err := p.receiveMessage(ExtensionMessageId)
 
 	if err != nil {
@@ -423,7 +421,7 @@ func (p *PeerConnection) receiveMetadataMessage() ([]byte, error) {
 	return metadataPiece, nil
 }
 
-func (p *PeerConnection) sendInterestAndAwaitUnchokeMessage() error {
+func (p *peerConnection) sendInterestAndAwaitUnchokeMessage() error {
 	if p.unchoked {
 		return nil
 	}
@@ -441,7 +439,7 @@ func (p *PeerConnection) sendInterestAndAwaitUnchokeMessage() error {
 	return nil
 }
 
-func (p *PeerConnection) sendExtensionHandshakeMessage() error {
+func (p *peerConnection) sendExtensionHandshakeMessage() error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"m": map[string]any{
 			"ut_metadata": metadataExtensionId,
@@ -469,7 +467,7 @@ func (p *PeerConnection) sendExtensionHandshakeMessage() error {
 	return nil
 }
 
-func (p *PeerConnection) sendMessage(messageId MessageId, payload []byte) error {
+func (p *peerConnection) sendMessage(messageId MessageId, payload []byte) error {
 	messageIdLen := 1
 	messagePrefixLen := 4
 	payloadLen := 0
@@ -493,7 +491,7 @@ func (p *PeerConnection) sendMessage(messageId MessageId, payload []byte) error 
 	return nil
 }
 
-func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
+func (p *peerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"msg_type": int(ExtensionRequestMessageId),
 		"piece":    pieceIndex,
@@ -519,21 +517,21 @@ func (p *PeerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 	return nil
 }
 
-func (p *PeerConnection) supportsExtension(ext Extension) bool {
+func (p *peerConnection) supportsExtension(ext Extension) bool {
 	_, ok := p.peerExtensions[ext]
 
 	return ok
 }
 
-func (p *PeerConnection) Close() {
+func (p *peerConnection) close() {
 	if p.conn != nil {
 		p.conn.Close()
 	}
 }
 
-func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
-	if err := p.InitConnection(); err != nil {
-		return nil, fmt.Errorf("failed to initialize peer connection: %w", err)
+func (p *peerConnection) downloadPiece(piece Piece) (*DownloadedPiece, error) {
+	if p.conn == nil {
+		return nil, fmt.Errorf("peer connection has not been established")
 	}
 
 	if !p.hasPiece(piece.Index) {
@@ -551,8 +549,8 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 
 	downloadedBlocks := make([]Block, numOfBlocks)
 	maxBatchSize := 5
-	mutex := ReadWriteMutex{}
-	resultsQueue := make(chan BlockRequestResult)
+	mutex := readWriteMutex{}
+	resultsQueue := make(chan blockRequestResult)
 
 	for numOfBlocksDownloaded < numOfBlocks {
 		pendingBlocks := blocks[numOfBlocksDownloaded:]
@@ -589,7 +587,7 @@ func (p *PeerConnection) DownloadPiece(piece Piece) (*DownloadedPiece, error) {
 	}, nil
 }
 
-func (p *PeerConnection) InitConnection() error {
+func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 	if p.conn != nil {
 		return nil
 	}
@@ -601,6 +599,7 @@ func (p *PeerConnection) InitConnection() error {
 	}
 
 	p.conn = conn
+	p.bitfield = make([]bool, config.bitfieldSize)
 
 	if err := p.completeBaseHandshake(); err != nil {
 		return err

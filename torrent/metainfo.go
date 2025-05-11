@@ -1,7 +1,6 @@
 package torrent
 
 import (
-	"context"
 	"crypto/sha1"
 	"fmt"
 	"path/filepath"
@@ -237,25 +236,20 @@ func parseMetaInfo(data []byte) (Torrent, error) {
 		return torrent, fmt.Errorf("failed to encode metainfo 'info' dictionary")
 	}
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	metadataCtx, metadataCancelFn := context.WithCancel(context.Background())
-
-	torrent.ctx = ctx
-	torrent.cancelFunc = cancelFunc
-
-	torrent.metadataDownloaderCtx = metadataCtx
-	torrent.metadataDownloaderCancelFunc = metadataCancelFn
-
 	torrent.info = torrentInfo
 	torrent.infoHash = sha1.Sum([]byte(bencodedValue))
 
+	torrent.metadataDownloadCompletedCh = make(chan struct{}, 1)
+	torrent.piecesDownloadCompleteCh = make(chan struct{}, 1)
+
 	torrent.incomingPeersCh = make(chan []Peer, 1)
 	torrent.maxPeerConnections = 10
-	torrent.metadataPeersCh = make(chan PeerConnection, 10)
+	torrent.metadataPeersCh = make(chan peerConnection, 10)
 	torrent.peerConnectionPool = newPeerConnectionPool()
 	torrent.peers = make(map[string]Peer)
 	torrent.failingPeers = make(map[string]Peer)
 
+	torrent.downloadedPieces = make(chan DownloadedPiece, 10)
 	torrent.failedPiecesCh = make(chan Piece, 10)
 	torrent.queuedPiecesCh = make(chan Piece, 10)
 
