@@ -141,7 +141,7 @@ If a piece fails during processing, it is re-enqueued from the failedPiecesCh
 channel. The function requires that the torrent metadata (tr.info) is
 available; otherwise, it will panic.
 */
-func (tr *Torrent) enquePieces(ctx context.Context) {
+func (tr *Torrent) enqueuePieces(ctx context.Context) {
 	if tr.info == nil {
 		panic("torrent metadata is not available; cannot enqueue pieces")
 	}
@@ -544,7 +544,7 @@ func (t *Torrent) Start() {
 		shutdownFn()
 		return
 	case <-t.metadataDownloadCompletedCh:
-		go t.enquePieces(downloaderCtx)
+		go t.enqueuePieces(downloaderCtx)
 		go t.startPieceDownloader(downloaderCtx)
 		go t.startPieceWriter(downloaderCtx)
 	}
