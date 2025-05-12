@@ -43,7 +43,7 @@ func parseAnnounceList(list any) (*utils.Set, error) {
 	return trackers, nil
 }
 
-func parseFilesList(infoDict map[string]any, tr Torrent) (*torrentInfo, error) {
+func parseFilesList(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) {
 	filesList, ok := infoDict["files"].([]any)
 
 	if !ok {
@@ -100,7 +100,7 @@ func parseFilesList(infoDict map[string]any, tr Torrent) (*torrentInfo, error) {
 		}
 
 		files[i] = file{
-			torrent:         &tr,
+			torrent:         tr,
 			Length:          fileLength,
 			Name:            filepath.Join(infoDict["name"].(string), path),
 			Offset:          fileOffset,
@@ -128,7 +128,7 @@ func parseFilesList(infoDict map[string]any, tr Torrent) (*torrentInfo, error) {
 	}, nil
 }
 
-func parseInfoDict(infoDict map[string]any, tr Torrent) (*torrentInfo, error) {
+func parseInfoDict(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) {
 	for key, value := range map[string]any{"name": "", "piece length": 0, "pieces": ""} {
 		if _, exists := infoDict[key]; !exists {
 			return nil, fmt.Errorf("metainfo 'info' dictionary is missing required property '%s'", key)
@@ -169,7 +169,7 @@ func parseInfoDict(infoDict map[string]any, tr Torrent) (*torrentInfo, error) {
 	}
 
 	files := []file{{
-		torrent:         &tr,
+		torrent:         tr,
 		Length:          fileLength,
 		Name:            infoDict["name"].(string),
 		Offset:          0,
@@ -183,31 +183,31 @@ func parseInfoDict(infoDict map[string]any, tr Torrent) (*torrentInfo, error) {
 	}, nil
 }
 
-func parseMetaInfo(data []byte) (Torrent, error) {
+func parseMetaInfo(data []byte) (*Torrent, error) {
 	var torrent Torrent
 
 	decodedValue, _, err := bencode.DecodeValue(data)
 
 	if err != nil {
-		return torrent, fmt.Errorf("failed to decode metainfo file: %w", err)
+		return nil, fmt.Errorf("failed to decode metainfo file: %w", err)
 	}
 
 	metainfo, ok := decodedValue.(map[string]any)
 
 	if !ok {
-		return torrent, fmt.Errorf("expected metainfo to be a bencoded dictionary, but received '%T'", metainfo)
+		return nil, fmt.Errorf("expected metainfo to be a bencoded dictionary, but received '%T'", metainfo)
 	}
 
 	for key, value := range map[string]any{"announce": "string", "info": make(map[string]any)} {
 		if _, exists := metainfo[key]; !exists {
-			return torrent, fmt.Errorf("metainfo dictionary is missing required property '%s'", key)
+			return nil, fmt.Errorf("metainfo dictionary is missing required property '%s'", key)
 		}
 
 		expectedType := reflect.TypeOf(value)
 		receivedType := reflect.TypeOf(metainfo[key])
 
 		if receivedType != expectedType {
-			return torrent, fmt.Errorf("expected the '%s' property to be of type '%v', but received '%v'", key, expectedType, receivedType)
+			return nil, fmt.Errorf("expected the '%s' property to be of type '%v', but received '%v'", key, expectedType, receivedType)
 		}
 	}
 
@@ -221,19 +221,19 @@ func parseMetaInfo(data []byte) (Torrent, error) {
 	}
 
 	if announceListErr != nil {
-		return torrent, fmt.Errorf("failed to parse announce list: %w", announceListErr)
+		return nil, fmt.Errorf("failed to parse announce list: %w", announceListErr)
 	}
 
-	torrentInfo, err := parseInfoDict(metainfo["info"].(map[string]any), torrent)
+	torrentInfo, err := parseInfoDict(metainfo["info"].(map[string]any), &torrent)
 
 	if err != nil {
-		return torrent, fmt.Errorf("failed to parse metainfo 'info' dictionary %w", err)
+		return nil, fmt.Errorf("failed to parse metainfo 'info' dictionary %w", err)
 	}
 
 	bencodedValue, err := bencode.EncodeValue(metainfo["info"])
 
 	if err != nil {
-		return torrent, fmt.Errorf("failed to encode metainfo 'info' dictionary")
+		return nil, fmt.Errorf("failed to encode metainfo 'info' dictionary")
 	}
 
 	torrent.info = torrentInfo
@@ -256,5 +256,5 @@ func parseMetaInfo(data []byte) (Torrent, error) {
 	torrent.trackers = *trackers
 	torrent.statusCh = make(chan torrentStatus, 1)
 
-	return torrent, nil
+	return &torrent, nil
 }

@@ -49,8 +49,11 @@ type Torrent struct {
 	info     *torrentInfo
 	infoHash [sha1.Size]byte
 
+	metadataDownloadCompleted   bool
 	metadataDownloadCompletedCh chan struct{}
-	piecesDownloadCompleteCh    chan struct{}
+	metadataDownloadCompletedMu sync.Mutex
+
+	piecesDownloadCompleteCh chan struct{}
 
 	bannedPeers        utils.Set
 	bannedPeersCh      chan string
@@ -72,25 +75,21 @@ type Torrent struct {
 	statusCh chan torrentStatus
 }
 
-func NewTorrent(src string) (Torrent, error) {
-	var torrent Torrent
-	var err error
-
+func NewTorrent(src string) (*Torrent, error) {
 	if utils.FileExists(src) {
 		fileContent, err := os.ReadFile(src)
 
 		if err != nil {
-			return torrent, fmt.Errorf("failed to read torrent file '%s' :%w", src, err)
+			return nil, fmt.Errorf("failed to read torrent file '%s' :%w", src, err)
 		}
 
-		torrent, err = parseMetaInfo(fileContent)
-		return torrent, err
+		return parseMetaInfo(fileContent)
 	}
 
 	parsedUrl, err := url.Parse(src)
 
 	if err != nil {
-		return torrent, fmt.Errorf("torrent src must be a path to a \".torrent\" file or a URL")
+		return nil, fmt.Errorf("torrent src must be a path to a \".torrent\" file or a URL")
 	}
 
 	switch parsedUrl.Scheme {
@@ -99,7 +98,7 @@ func NewTorrent(src string) (Torrent, error) {
 			resp, err := http.DefaultClient.Get(src)
 
 			if err != nil {
-				return torrent, fmt.Errorf("HTTP request failed: %w", err)
+				return nil, fmt.Errorf("HTTP request failed: %w", err)
 			}
 
 			defer resp.Body.Close()
@@ -107,29 +106,26 @@ func NewTorrent(src string) (Torrent, error) {
 			statusOK := resp.StatusCode >= 200 && resp.StatusCode < 300
 
 			if !statusOK {
-				return torrent, fmt.Errorf("received NON-OK HTTP status code \"%d\"", resp.StatusCode)
+				return nil, fmt.Errorf("received NON-OK HTTP status code \"%d\"", resp.StatusCode)
 			}
 
 			content, err := io.ReadAll(resp.Body)
 
 			if err != nil {
-				return torrent, fmt.Errorf("failed to read HTTP response body: %w", err)
+				return nil, fmt.Errorf("failed to read HTTP response body: %w", err)
 			}
 
-			torrent, err = parseMetaInfo(content)
-
-			return torrent, err
+			return parseMetaInfo(content)
 		}
 
 	case "magnet":
 		{
-			torrent, err = parseMagnetURL(parsedUrl)
-			return torrent, err
+			return parseMagnetURL(parsedUrl)
 		}
 
 	default:
 		{
-			return torrent, fmt.Errorf("torrent URL scheme must be one of \"http\", \"https\" or \"magnet\"")
+			return nil, fmt.Errorf("torrent URL scheme must be one of \"http\", \"https\" or \"magnet\"")
 		}
 	}
 }
@@ -235,6 +231,20 @@ func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
 	}
 }
 
+// Marks the metadata download process as completed for the Torrent instance.
+// It ensures thread-safe access to the metadata download state using a mutex lock.
+// If the metadata download has not been marked as completed yet, it closes the metadata download channel
+// and updates the state to indicate completion.
+func (tr *Torrent) markMetadataDownloadCompleted() {
+	tr.metadataDownloadCompletedMu.Lock()
+	defer tr.metadataDownloadCompletedMu.Unlock()
+
+	if !tr.metadataDownloadCompleted {
+		close(tr.metadataDownloadCompletedCh)
+		tr.metadataDownloadCompleted = true
+	}
+}
+
 // startAnnouncer starts the announcer routine for the Torrent instance.
 // This function periodically sends announce requests to the trackers associated
 // with the torrent to retrieve peer information. It runs in an interval defined
@@ -331,6 +341,7 @@ If the metadata download fails or the hash does not match, the function continue
 */
 func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 	if tr.info != nil {
+		tr.markMetadataDownloadCompleted()
 		return
 	}
 
@@ -347,9 +358,10 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 					break
 				}
 
+				defer pc.close()
+
 				if !pc.supportsExtension(Metadata) {
 					fmt.Printf("peer connection \"%s\" does not support the metadata extension\n", pc.peerAddress)
-					pc.close()
 					break
 				}
 
@@ -357,41 +369,34 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 
 				if err != nil {
 					fmt.Println(err)
-					pc.close()
 					break
 				}
 
 				if metadataHash := sha1.Sum(metadata); !bytes.Equal(tr.infoHash[:], metadataHash[:]) {
 					// todo: blacklist peer?
-					pc.close()
 					break
 				}
 
 				decodedValue, _, err := bencode.DecodeValue(metadata)
 
 				if err != nil {
-					pc.close()
 					break
 				}
 
 				metadataDict, ok := decodedValue.(map[string]any)
 
 				if !ok {
-					pc.close()
 					break
 				}
 
-				info, err := parseInfoDict(metadataDict, *tr)
+				info, err := parseInfoDict(metadataDict, tr)
 
 				if err != nil {
-					pc.close()
 					break
 				}
 
 				tr.info = info
-				pc.close()
-				tr.metadataDownloadCompletedCh <- struct{}{}
-				close(tr.metadataDownloadCompletedCh)
+				tr.markMetadataDownloadCompleted()
 				return
 			}
 		}
@@ -508,7 +513,8 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 	}
 }
 
-// Start initializes and manages the lifecycle of the torrent download process.
+// Initializes and manages the lifecycle of the torrent download process.
+//
 // It sets up various goroutines to handle peer connections, metadata downloading,
 // piece downloading, and writing. The function listens for system signals to
 // gracefully shut down all active processes and connections. It also ensures
@@ -532,11 +538,10 @@ func (t *Torrent) Start() {
 
 	shutdownFn := func() {
 		fmt.Println("shutting down...")
-		cancelCtx()
 		cancelDownloader()
+		cancelCtx()
 		t.peerConnectionPool.closeConnections()
 		fmt.Println("successfully closed all peer connections.")
-		// Do not close signalsCh to avoid potential panic from sending to a closed channel
 	}
 
 	select {
