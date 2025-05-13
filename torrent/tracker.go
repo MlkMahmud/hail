@@ -45,7 +45,7 @@ The compact extension tells the tracker to send the peers key as a single string
 
 The second kind of response is a BEncoded dictionary with a failure reason key. It means that the tracker was unable to process the request. The value of the failure reason is a human readable text that contains the cause of the error. If this key is present, no other key needs to be present.
 */
-func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
+func (t *torrent) parseHTTPAnnounceResponse(res []byte) ([]peer, error) {
 	decodedResponse, _, err := bencode.DecodeValue(res)
 
 	if err != nil {
@@ -83,12 +83,12 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
 			}
 
 			numOfPeers := peersStringLen / peerSize
-			peersArr := make([]Peer, numOfPeers)
+			peersArr := make([]peer, numOfPeers)
 
 			for i, j := 0, 0; i < peersStringLen; i += peerSize {
-				IpAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
-				Port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
-				peersArr[j] = Peer{IpAddress: IpAddress, Port: Port, InfoHash: t.infoHash}
+				ipAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
+				port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
+				peersArr[j] = peer{ipAddress: ipAddress, port: port}
 				j++
 			}
 
@@ -96,10 +96,10 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
 		}
 	case []any:
 		{
-			peersArr := make([]Peer, len(peersValue))
+			peersArr := make([]peer, len(peersValue))
 
-			for index, peer := range peersValue {
-				peerDict, ok := peer.(map[string]any)
+			for index, pe := range peersValue {
+				peerDict, ok := pe.(map[string]any)
 
 				if !ok {
 					return nil, fmt.Errorf("peers list contains an invalid entry at index: \"%d\"", index)
@@ -118,10 +118,9 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]Peer, error) {
 					}
 				}
 
-				peersArr[index] = Peer{
-					InfoHash:  t.infoHash,
-					IpAddress: peerDict["ip"].(string),
-					Port:      uint16(peerDict["port"].(int)),
+				peersArr[index] = peer{
+					ipAddress: peerDict["ip"].(string),
+					port:      uint16(peerDict["port"].(int)),
 				}
 			}
 
@@ -148,7 +147,7 @@ IPv4 announce response:
 	24 + 6 * n  16-bit integer  TCP port
 	20 + 6 * N
 */
-func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, transactionId uint32) ([]Peer, error) {
+func (tr *torrent) parseUDPAnnounceResponse(response []byte, action uint32, transactionId uint32) ([]peer, error) {
 	minSize := 20
 	peerSize := 6
 
@@ -172,19 +171,19 @@ func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, tran
 	}
 
 	numOfPeers := peersBufferSize / peerSize
-	peersArr := make([]Peer, numOfPeers)
+	peersArr := make([]peer, numOfPeers)
 
 	for i, j := 0, 0; i < peersBufferSize; i += peerSize {
 		ipAddress := fmt.Sprintf("%d.%d.%d.%d", peersBuffer[i], peersBuffer[i+1], peersBuffer[i+2], peersBuffer[i+3])
 		port := binary.BigEndian.Uint16(peersBuffer[i+4:])
-		peersArr[j] = Peer{InfoHash: tr.infoHash, IpAddress: ipAddress, Port: port}
+		peersArr[j] = peer{ipAddress: ipAddress, port: port}
 		j++
 	}
 
 	return peersArr, nil
 }
 
-func (tr *Torrent) sendHTTPAnnounceRequest(trackerURL string) ([]Peer, error) {
+func (tr *torrent) sendHTTPAnnounceRequest(trackerURL string) ([]peer, error) {
 	params := url.Values{}
 	// set length to a random value if the length of the torrent file is not known yet
 	length := 999
@@ -261,7 +260,7 @@ Announce Request
 	96      16-bit integer  port
 	98
 */
-func (tr *Torrent) sendUDPAnnounceRequest(trackerUrl string) ([]Peer, error) {
+func (tr *torrent) sendUDPAnnounceRequest(trackerUrl string) ([]peer, error) {
 	parsedUrl, err := url.Parse(trackerUrl)
 
 	if err != nil {
@@ -337,9 +336,9 @@ func (tr *Torrent) sendUDPAnnounceRequest(trackerUrl string) ([]Peer, error) {
 
 	binary.BigEndian.PutUint16(reqBuffer[index:], port)
 
-	response, err := utils.Retry(utils.RetryOptions[[]Peer]{
+	response, err := utils.Retry(utils.RetryOptions[[]peer]{
 		Delay: 3 * time.Second,
-		Operation: func() ([]Peer, error) {
+		Operation: func() ([]peer, error) {
 			defer func() {
 				attempts += 1
 			}()
@@ -436,7 +435,7 @@ func sendUDPConnectRequest(conn net.Conn, transactionId uint32) (uint64, error) 
 	return connectionId, err
 }
 
-func (tr *Torrent) sendAnnounceRequest(trackerUrl string) ([]Peer, error) {
+func (tr *torrent) sendAnnounceRequest(trackerUrl string) ([]peer, error) {
 	parsedURL, err := url.Parse(trackerUrl)
 
 	if err != nil {

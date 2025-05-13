@@ -15,7 +15,7 @@ import (
 )
 
 type blockRequestResult struct {
-	block Block
+	block block
 	err   error
 }
 
@@ -27,7 +27,7 @@ type peerConnection struct {
 	infoHash           [sha1.Size]byte
 	peerAddress        string
 	peerId             string
-	peerExtensions     map[Extension]uint8
+	peerExtensions     map[extension]uint8
 	supportsExtensions bool
 	unchoked           bool
 }
@@ -58,14 +58,14 @@ const (
 	peerConnectionMaxFailedAttempts = 3
 )
 
-func newPeerConnection(pe Peer) *peerConnection {
+func newPeerConnection(pe peer, infoHash [sha1.Size]byte) *peerConnection {
 	return &peerConnection{
-		infoHash:    pe.InfoHash,
-		peerAddress: fmt.Sprintf("%s:%d", pe.IpAddress, pe.Port),
+		infoHash:    infoHash,
+		peerAddress: fmt.Sprintf("%s:%d", pe.ipAddress, pe.port),
 	}
 }
 
-func generateBlockRequestPayload(block Block) []byte {
+func generateBlockRequestPayload(block block) []byte {
 	blockBeginSize := 4
 	blockIndexSize := 4
 	blockLengthSize := 4
@@ -75,13 +75,13 @@ func generateBlockRequestPayload(block Block) []byte {
 
 	index := 0
 
-	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.PieceIndex))
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.pieceIndex))
 	index += blockIndexSize
 
-	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.Begin))
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.begin))
 	index += blockBeginSize
 
-	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.Length))
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.length))
 	index += blockLengthSize
 
 	return messageBuffer
@@ -158,17 +158,17 @@ func (p *peerConnection) completeExtensionHandshake() error {
 	return nil
 }
 
-func (p *peerConnection) downloadBlock(block Block, resultsQueue chan<- blockRequestResult, mutex *readWriteMutex) {
+func (p *peerConnection) downloadBlock(requestedBlock block, resultsQueue chan<- blockRequestResult, mutex *readWriteMutex) {
 	retries := 2
 
-	var downloadedBlock Block
+	var downloadedBlock block
 	var mainError error
 
 	for i := 0; i < retries; i++ {
-		payload := generateBlockRequestPayload(block)
+		payload := generateBlockRequestPayload(requestedBlock)
 
 		mutex.writer.Lock()
-		err := p.sendMessage(Request, payload)
+		err := p.sendMessage(requestMessageId, payload)
 		mutex.writer.Unlock()
 
 		if err != nil {
@@ -177,7 +177,7 @@ func (p *peerConnection) downloadBlock(block Block, resultsQueue chan<- blockReq
 		}
 
 		mutex.reader.Lock()
-		message, err := p.receiveMessage(PieceMessageId)
+		message, err := p.receiveMessage(pieceMessageId)
 		mutex.reader.Unlock()
 
 		if err != nil {
@@ -187,19 +187,19 @@ func (p *peerConnection) downloadBlock(block Block, resultsQueue chan<- blockReq
 
 		index := 0
 
-		blockPieceIndex := binary.BigEndian.Uint32(message.Payload[index:])
+		blockPieceIndex := binary.BigEndian.Uint32(message.payload[index:])
 		index += 4
 
-		blockPieceOffset := binary.BigEndian.Uint32(message.Payload[index:])
+		blockPieceOffset := binary.BigEndian.Uint32(message.payload[index:])
 		index += 4
 
-		blockData := message.Payload[index:]
+		blockData := message.payload[index:]
 
-		downloadedBlock = Block{
-			Begin:      int(blockPieceOffset),
-			Data:       blockData,
-			Length:     len(blockData),
-			PieceIndex: int(blockPieceIndex),
+		downloadedBlock = block{
+			begin:      int(blockPieceOffset),
+			data:       blockData,
+			length:     len(blockData),
+			pieceIndex: int(blockPieceIndex),
 		}
 
 		break
@@ -234,9 +234,9 @@ func (p *peerConnection) downloadMetadata() ([]byte, error) {
 		buffer = append(buffer, metadataPiece...)
 		index += 1
 
-		//  If it is not the last piece of the metadata, it MUST be 16kiB (BlockSize).
+		//  If it is not the last piece of the metadata, it MUST be 16kiB (blockSize).
 		// todo: get metadata size from extension handshake request.
-		if len(metadataPiece) != BlockSize {
+		if len(metadataPiece) != blockSize {
 			hasDownloadedAllPieces = true
 			break
 		}
@@ -260,7 +260,7 @@ func (p *peerConnection) downloadMetadataPiece(pieceIndex int) ([]byte, error) {
 }
 
 func (p *peerConnection) parseBitFieldMessage() error {
-	message, err := p.receiveMessage(Bitfield)
+	message, err := p.receiveMessage(bitfieldMessageId)
 
 	if err != nil {
 		return fmt.Errorf("failed to receive 'Bitfield' message from peer: %w", err)
@@ -273,7 +273,7 @@ func (p *peerConnection) parseBitFieldMessage() error {
 		return nil
 	}
 
-	if receivedBitfieldLength := len(message.Payload); receivedBitfieldLength != expectedBitFieldLength {
+	if receivedBitfieldLength := len(message.payload); receivedBitfieldLength != expectedBitFieldLength {
 		return fmt.Errorf("expected 'Bitfield' payload to contain '%d' bytes, but got '%d'", expectedBitFieldLength, receivedBitfieldLength)
 	}
 
@@ -284,7 +284,7 @@ func (p *peerConnection) parseBitFieldMessage() error {
 		placeValue := 7 - byteIndex
 		mask := int(math.Pow(float64(2), float64(placeValue)))
 
-		isBitSet := (message.Payload[byteArrayIndex] & byte(mask)) != 0
+		isBitSet := (message.payload[byteArrayIndex] & byte(mask)) != 0
 		p.bitfield[index] = isBitSet
 	}
 
@@ -292,14 +292,14 @@ func (p *peerConnection) parseBitFieldMessage() error {
 }
 
 func (p *peerConnection) receiveExtensionHandshakeMessage() error {
-	message, err := p.receiveMessage(ExtensionMessageId)
+	message, err := p.receiveMessage(extensionMessageId)
 
 	if err != nil {
 		return fmt.Errorf("failed to receive extension handshake message %w", err)
 	}
 
 	// Ignore the first byte of the payload which contains the extension message ID.
-	decodedPayload, _, err := bencode.DecodeValue(message.Payload[1:])
+	decodedPayload, _, err := bencode.DecodeValue(message.payload[1:])
 
 	if err != nil {
 		return fmt.Errorf("failed to decode extension handshake message payload %w", err)
@@ -312,13 +312,13 @@ func (p *peerConnection) receiveExtensionHandshakeMessage() error {
 	}
 
 	extensionsMap, ok := dict["m"].(map[string]any)
-	extensions := make(map[Extension]uint8)
+	extensions := make(map[extension]uint8)
 
 	if !ok {
 		return fmt.Errorf("expected decoded payload to include an \"m\" key which maps to a dictionary of supported extensions, but got %v", extensionsMap)
 	}
 
-	for _, ext := range []Extension{Metadata} {
+	for _, ext := range []extension{metadataExt} {
 		value, ok := extensionsMap[string(ext)]
 
 		if !ok {
@@ -343,7 +343,7 @@ func (p *peerConnection) receiveExtensionHandshakeMessage() error {
 	return nil
 }
 
-func (p *peerConnection) receiveMessage(messageId MessageId) (*Message, error) {
+func (p *peerConnection) receiveMessage(id messageId) (*message, error) {
 	messageLengthBuffer := make([]byte, 4)
 
 	if _, err := utils.ConnReadFull(p.conn, messageLengthBuffer, 0); err != nil {
@@ -357,31 +357,31 @@ func (p *peerConnection) receiveMessage(messageId MessageId) (*Message, error) {
 		return nil, err
 	}
 
-	receivedMessageId := MessageId(messageBuffer[0])
+	receivedMessageId := messageId(messageBuffer[0])
 
-	if receivedMessageId != messageId {
-		return nil, fmt.Errorf("expected received message Id to be %d, but got %d", messageId, receivedMessageId)
+	if receivedMessageId != id {
+		return nil, fmt.Errorf("expected received message Id to be %d, but got %d", id, receivedMessageId)
 	}
 
-	return &Message{Id: receivedMessageId, Payload: messageBuffer[1:]}, nil
+	return &message{id: receivedMessageId, payload: messageBuffer[1:]}, nil
 }
 
 func (p *peerConnection) receiveMetadataMessage() ([]byte, error) {
-	message, err := p.receiveMessage(ExtensionMessageId)
+	message, err := p.receiveMessage(extensionMessageId)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive metadata message: %w", err)
 	}
 
-	if len(message.Payload) == 0 {
+	if len(message.payload) == 0 {
 		return nil, fmt.Errorf("metadata response payload is empty")
 	}
 
-	if receivedId := int(message.Payload[0]); receivedId != metadataExtensionId {
+	if receivedId := int(message.payload[0]); receivedId != metadataExtensionId {
 		return nil, fmt.Errorf("expected metadata extension Id to be %d, but received %d", metadataExtensionId, receivedId)
 	}
 
-	decoded, nextCharIndex, err := bencode.DecodeValue(message.Payload[1:])
+	decoded, nextCharIndex, err := bencode.DecodeValue(message.payload[1:])
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode metadata response payload: %w", err)
@@ -393,12 +393,12 @@ func (p *peerConnection) receiveMetadataMessage() ([]byte, error) {
 		return nil, fmt.Errorf("expected decoded metadata response to be a dictionary, but received %v", dict)
 	}
 
-	if dict["msg_type"] == int(ExtensionRejectMessageId) {
+	if dict["msg_type"] == int(extensionRejectMessageId) {
 		return nil, fmt.Errorf("peer does not have the piece of metadata that was requested")
 	}
 
-	if dict["msg_type"] != int(ExtensionDataMessageId) {
-		return nil, fmt.Errorf("expected \"msg_type\" key to have value %d, but got %v", int(ExtensionDataMessageId), dict["msg_type"])
+	if dict["msg_type"] != int(extensionDataMessageId) {
+		return nil, fmt.Errorf("expected \"msg_type\" key to have value %d, but got %v", int(extensionDataMessageId), dict["msg_type"])
 	}
 
 	pieceIndex, ok := dict["piece"].(int)
@@ -414,7 +414,7 @@ func (p *peerConnection) receiveMetadataMessage() ([]byte, error) {
 	}
 
 	metadataPieceStartIndex := nextCharIndex + 1 // add one to account for the first byte (the extension message Id)
-	metadataPiece := message.Payload[metadataPieceStartIndex:]
+	metadataPiece := message.payload[metadataPieceStartIndex:]
 
 	if receivedPieceSize := len(metadataPiece); receivedPieceSize != pieceSize {
 		return nil, fmt.Errorf("expected metadata piece to have length %d, but received %d", pieceSize, receivedPieceSize)
@@ -428,11 +428,11 @@ func (p *peerConnection) sendInterestAndAwaitUnchokeMessage() error {
 		return nil
 	}
 
-	if err := p.sendMessage(Interested, nil); err != nil {
+	if err := p.sendMessage(interestedMessageId, nil); err != nil {
 		return fmt.Errorf("failed to send 'Interested' message to peer: %w", err)
 	}
 
-	if _, err := p.receiveMessage(Unchoke); err != nil {
+	if _, err := p.receiveMessage(unchokeMessageId); err != nil {
 		return fmt.Errorf("failed to receive 'Unchoke' message from peer: %w", err)
 	}
 
@@ -462,14 +462,14 @@ func (p *peerConnection) sendExtensionHandshakeMessage() error {
 
 	copy(messagePayloadBuffer[index:], []byte(bencodedString))
 
-	if err := p.sendMessage(ExtensionMessageId, messagePayloadBuffer); err != nil {
+	if err := p.sendMessage(extensionMessageId, messagePayloadBuffer); err != nil {
 		return fmt.Errorf("failed to send extension handshake message: %w", err)
 	}
 
 	return nil
 }
 
-func (p *peerConnection) sendMessage(messageId MessageId, payload []byte) error {
+func (p *peerConnection) sendMessage(messageId messageId, payload []byte) error {
 	messageIdLen := 1
 	messagePrefixLen := 4
 	payloadLen := 0
@@ -495,7 +495,7 @@ func (p *peerConnection) sendMessage(messageId MessageId, payload []byte) error 
 
 func (p *peerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
-		"msg_type": int(ExtensionRequestMessageId),
+		"msg_type": int(extensionRequestMessageId),
 		"piece":    pieceIndex,
 	})
 
@@ -507,19 +507,19 @@ func (p *peerConnection) sendMetadataRequestMessage(pieceIndex int) error {
 	messagePayloadBuffer := make([]byte, extensionMessageIdLength+len(bencodedString))
 
 	index := 0
-	messagePayloadBuffer[index] = byte(p.peerExtensions[Metadata])
+	messagePayloadBuffer[index] = byte(p.peerExtensions[metadataExt])
 
 	index += 1
 	copy(messagePayloadBuffer[index:], []byte(bencodedString))
 
-	if err := p.sendMessage(ExtensionMessageId, messagePayloadBuffer); err != nil {
+	if err := p.sendMessage(extensionMessageId, messagePayloadBuffer); err != nil {
 		return fmt.Errorf("failed to send metadata extension request %w", err)
 	}
 
 	return nil
 }
 
-func (p *peerConnection) supportsExtension(ext Extension) bool {
+func (p *peerConnection) supportsExtension(ext extension) bool {
 	_, ok := p.peerExtensions[ext]
 
 	return ok
@@ -531,25 +531,25 @@ func (p *peerConnection) close() {
 	}
 }
 
-func (p *peerConnection) downloadPiece(piece Piece) (*DownloadedPiece, error) {
+func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 	if p.conn == nil {
 		return nil, fmt.Errorf("peer connection has not been established")
 	}
 
-	if !p.hasPiece(piece.Index) {
+	if !p.hasPiece(piece.index) {
 		// todo: should this be treated as an error?
-		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.peerAddress, piece.Index)
+		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.peerAddress, piece.index)
 	}
 
 	if err := p.sendInterestAndAwaitUnchokeMessage(); err != nil {
-		return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.Index, err)
+		return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.index, err)
 	}
 
 	blocks := piece.getBlocks()
 	numOfBlocks := len(blocks)
 	numOfBlocksDownloaded := 0
 
-	downloadedBlocks := make([]Block, numOfBlocks)
+	downloadedBlocks := make([]block, numOfBlocks)
 	maxBatchSize := 5
 	mutex := readWriteMutex{}
 	resultsQueue := make(chan blockRequestResult)
@@ -567,14 +567,14 @@ func (p *peerConnection) downloadPiece(piece Piece) (*DownloadedPiece, error) {
 			result := <-resultsQueue
 
 			if result.err != nil {
-				return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.Index, result.err)
+				return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.index, result.err)
 			}
 
 			downloadedBlock := result.block
-			downloadedBlockIndex := downloadedBlock.Begin / BlockSize
+			downloadedBlockIndex := downloadedBlock.begin / blockSize
 
 			if downloadedBlockIndex >= numOfBlocks {
-				return nil, fmt.Errorf("downloaded block offset %d is invalid", downloadedBlock.Begin)
+				return nil, fmt.Errorf("downloaded block offset %d is invalid", downloadedBlock.begin)
 			}
 
 			downloadedBlocks[downloadedBlockIndex] = downloadedBlock
@@ -583,9 +583,9 @@ func (p *peerConnection) downloadPiece(piece Piece) (*DownloadedPiece, error) {
 
 	}
 
-	return &DownloadedPiece{
-		Data:  piece.assembleBlocks(downloadedBlocks),
-		Piece: piece,
+	return &downloadedPiece{
+		data:  piece.assembleBlocks(downloadedBlocks),
+		piece: piece,
 	}, nil
 }
 

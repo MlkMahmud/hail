@@ -43,7 +43,7 @@ func parseAnnounceList(list any) (*utils.Set, error) {
 	return trackers, nil
 }
 
-func parseFilesList(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) {
+func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 	filesList, ok := infoDict["files"].([]any)
 
 	if !ok {
@@ -55,7 +55,7 @@ func parseFilesList(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) 
 
 	pieceLength := infoDict["piece length"].(int)
 	pieces := infoDict["pieces"].(string)
-	piecesArr := []Piece{}
+	piecesArr := []piece{}
 
 	fileOffset := 0
 	piecesIndex := 0
@@ -100,10 +100,9 @@ func parseFilesList(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) 
 		}
 
 		files[i] = file{
-			torrent:         tr,
-			Length:          fileLength,
-			Name:            filepath.Join(infoDict["name"].(string), path),
-			Offset:          fileOffset,
+			length:          fileLength,
+			name:            filepath.Join(infoDict["name"].(string), path),
+			offset:          fileOffset,
 			pieceEndIndex:   pieceEndIndex,
 			pieceStartIndex: pieceStartIndex,
 		}
@@ -128,7 +127,7 @@ func parseFilesList(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) 
 	}, nil
 }
 
-func parseInfoDict(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) {
+func parseInfoDict(infoDict map[string]any) (*torrentInfo, error) {
 	for key, value := range map[string]any{"name": "", "piece length": 0, "pieces": ""} {
 		if _, exists := infoDict[key]; !exists {
 			return nil, fmt.Errorf("metainfo 'info' dictionary is missing required property '%s'", key)
@@ -143,7 +142,7 @@ func parseInfoDict(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) {
 	}
 
 	if _, ok := infoDict["files"]; ok {
-		info, err := parseFilesList(infoDict, tr)
+		info, err := parseFilesList(infoDict)
 
 		return info, err
 	}
@@ -169,10 +168,9 @@ func parseInfoDict(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) {
 	}
 
 	files := []file{{
-		torrent:         tr,
-		Length:          fileLength,
-		Name:            infoDict["name"].(string),
-		Offset:          0,
+		length:          fileLength,
+		name:            infoDict["name"].(string),
+		offset:          0,
 		pieceEndIndex:   fileLength / pieceLength,
 		pieceStartIndex: 0,
 	}}
@@ -183,8 +181,8 @@ func parseInfoDict(infoDict map[string]any, tr *Torrent) (*torrentInfo, error) {
 	}, nil
 }
 
-func parseMetaInfo(data []byte) (*Torrent, error) {
-	var torrent Torrent
+func parseMetaInfo(data []byte) (*torrent, error) {
+	var torrent torrent
 
 	decodedValue, _, err := bencode.DecodeValue(data)
 
@@ -224,7 +222,7 @@ func parseMetaInfo(data []byte) (*Torrent, error) {
 		return nil, fmt.Errorf("failed to parse announce list: %w", announceListErr)
 	}
 
-	torrentInfo, err := parseInfoDict(metainfo["info"].(map[string]any), &torrent)
+	torrentInfo, err := parseInfoDict(metainfo["info"].(map[string]any))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse metainfo 'info' dictionary %w", err)
@@ -242,16 +240,16 @@ func parseMetaInfo(data []byte) (*Torrent, error) {
 	torrent.metadataDownloadCompletedCh = make(chan struct{}, 1)
 	torrent.piecesDownloadCompleteCh = make(chan struct{}, 1)
 
-	torrent.incomingPeersCh = make(chan []Peer, 1)
+	torrent.incomingPeersCh = make(chan []peer, 1)
 	torrent.maxPeerConnections = 10
 	torrent.metadataPeersCh = make(chan peerConnection, 10)
 	torrent.peerConnectionPool = newPeerConnectionPool()
-	torrent.peers = make(map[string]Peer)
-	torrent.failingPeers = make(map[string]Peer)
+	torrent.peers = make(map[string]peer)
+	torrent.failingPeers = make(map[string]peer)
 
-	torrent.downloadedPieces = make(chan DownloadedPiece, 10)
-	torrent.failedPiecesCh = make(chan Piece, 10)
-	torrent.queuedPiecesCh = make(chan Piece, 10)
+	torrent.downloadedPieces = make(chan downloadedPiece, 10)
+	torrent.failedPiecesCh = make(chan piece, 10)
+	torrent.queuedPiecesCh = make(chan piece, 10)
 
 	torrent.trackers = *trackers
 	torrent.statusCh = make(chan torrentStatus, 1)

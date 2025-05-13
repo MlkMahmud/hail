@@ -35,7 +35,7 @@ func (p *peerConnectionPool) closeConnections() {
 		pc.close()
 	}
 
-	p.connections = make(map[string]peerConnection)
+	fmt.Println("successfully closed all peer connections.")
 }
 
 func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (peerConnection, error) {
