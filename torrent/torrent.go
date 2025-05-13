@@ -471,7 +471,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 									tr.failedPiecesCh <- piece
 									continue
 								}
-								
+
 								fmt.Printf("successfully downloaded piece %d\n", piece.Index)
 								tr.downloadedPieces <- *downloadedPiece
 								fmt.Printf("added piece %d to downloaded queue\n", piece.Index)
@@ -510,6 +510,70 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 					return
 				}
 			}
+		}
+	}
+}
+
+func (tr *Torrent) writeTorrentFilesToDisk(ctx context.Context) {
+	for _, file := range tr.info.files {
+		select {
+		case <-ctx.Done():
+			fmt.Println("context canceled, stopping writeTorrentFilesToDisk...")
+			return
+		default:
+			dest, err := os.OpenFile(file.Name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+
+			if err != nil {
+				fmt.Printf("failed to create file '%s': %v\n", file.Name, err)
+				continue
+			}
+
+			for index := file.pieceStartIndex; index <= file.pieceEndIndex; index++ {
+				select {
+				case <-ctx.Done():
+					fmt.Println("context canceled, stopping file writing...")
+					dest.Close()
+					return
+				default:
+					isInitialPiece := file.pieceStartIndex == index
+					filePath := fmt.Sprintf("piece-%d", tr.info.pieces[index].Index)
+					offset := 0
+
+					if isInitialPiece {
+						offset = file.Offset
+					}
+
+					fptr, err := os.Open(filePath)
+
+					if err != nil {
+						fmt.Printf("failed to open file '%s': %v\n", filePath, err)
+						break
+					}
+
+					if _, err := fptr.Seek(int64(offset), io.SeekStart); err != nil {
+						fmt.Printf("failed to seek to offset %d in file '%s': %v\n", offset, filePath, err)
+						fptr.Close()
+						break
+					}
+
+					content, err := io.ReadAll(fptr)
+
+					if err != nil {
+						fmt.Printf("failed to read data from file '%s': %v\n", filePath, err)
+						fptr.Close()
+						break
+					}
+
+					fptr.Close()
+
+					if _, err := dest.Write(content); err != nil {
+						fmt.Printf("failed to write data from piece '%d' to file '%s': '%v'\n", index, dest.Name(), err)
+						break
+					}
+				}
+			}
+
+			dest.Close()
 		}
 	}
 }
@@ -561,6 +625,7 @@ func (t *Torrent) Start() {
 		return
 	case <-t.piecesDownloadCompleteCh:
 		cancelDownloader()
+		go t.writeTorrentFilesToDisk(ctx)
 	}
 
 	<-signalsCh

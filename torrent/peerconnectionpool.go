@@ -52,12 +52,11 @@ func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (peerConnect
 
 		p.mutex.Unlock()
 
-		fmt.Println("failed to get idle connection")
 		select {
 		case <-ctx.Done():
 			return peerConnection{}, fmt.Errorf("context canceled: %w", ctx.Err())
 		default:
-			// todo: addd trigger to find more peers
+			// todo: add trigger to find more peers
 			time.Sleep(2 * time.Second)
 		}
 	}
