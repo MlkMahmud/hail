@@ -514,11 +514,10 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 	}
 }
 
-func (tr *Torrent) writeTorrentFilesToDisk(ctx context.Context) {
+func (tr *Torrent) writeFilesToDisk(ctx context.Context) {
 	for _, file := range tr.info.files {
 		select {
 		case <-ctx.Done():
-			fmt.Println("context canceled, stopping writeTorrentFilesToDisk...")
 			return
 		default:
 			dest, err := os.OpenFile(file.Name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
@@ -625,7 +624,7 @@ func (t *Torrent) Start() {
 		return
 	case <-t.piecesDownloadCompleteCh:
 		cancelDownloader()
-		go t.writeTorrentFilesToDisk(ctx)
+		go t.writeFilesToDisk(ctx)
 	}
 
 	<-signalsCh
