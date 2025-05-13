@@ -23,6 +23,7 @@ type peerConnection struct {
 	bitfield           []bool
 	conn               net.Conn
 	failedAttempts     int
+	hashFails          int
 	infoHash           [sha1.Size]byte
 	peerAddress        string
 	peerId             string
@@ -53,6 +54,7 @@ const (
 )
 
 const (
+	maxHashFails                    = 3
 	peerConnectionMaxFailedAttempts = 3
 )
 

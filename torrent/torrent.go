@@ -98,7 +98,7 @@ func NewTorrent(src string) (*Torrent, error) {
 			resp, err := http.DefaultClient.Get(src)
 
 			if err != nil {
-				return nil, fmt.Errorf("HTTP request failed: %w", err)
+				return nil, fmt.Errorf("failed to fetch torrent file from URL '%s': %w", src, err)
 			}
 
 			defer resp.Body.Close()
@@ -106,13 +106,13 @@ func NewTorrent(src string) (*Torrent, error) {
 			statusOK := resp.StatusCode >= 200 && resp.StatusCode < 300
 
 			if !statusOK {
-				return nil, fmt.Errorf("received NON-OK HTTP status code \"%d\"", resp.StatusCode)
+				return nil, fmt.Errorf("received NON-OK HTTP status code \"%d\" while attempting to fetch torrent file from URL '%s'. Please check the URL or try again later", resp.StatusCode, src)
 			}
 
 			content, err := io.ReadAll(resp.Body)
 
 			if err != nil {
-				return nil, fmt.Errorf("failed to read HTTP response body: %w", err)
+				return nil, fmt.Errorf("failed to read HTTP response body from URL '%s': %w", src, err)
 			}
 
 			return parseMetaInfo(content)
@@ -125,7 +125,7 @@ func NewTorrent(src string) (*Torrent, error) {
 
 	default:
 		{
-			return nil, fmt.Errorf("torrent URL scheme must be one of \"http\", \"https\" or \"magnet\"")
+			return nil, fmt.Errorf("unsupported torrent URL scheme \"%s\". The URL scheme must be one of \"http\", \"https\", or \"magnet\". Please check the provided URL: '%s'", parsedUrl.Scheme, src)
 		}
 	}
 }
@@ -471,6 +471,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 									tr.failedPiecesCh <- piece
 									continue
 								}
+								
 								fmt.Printf("successfully downloaded piece %d\n", piece.Index)
 								tr.downloadedPieces <- *downloadedPiece
 								fmt.Printf("added piece %d to downloaded queue\n", piece.Index)
