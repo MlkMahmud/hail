@@ -26,7 +26,7 @@ func newPeerConnectionPool() *peerConnectionPool {
 
 func (p *peerConnectionPool) addConnection(pc peerConnection) {
 	p.mutex.Lock()
-	p.connections[pc.peerAddress] = pc
+	p.connections[pc.remotePeerAddress] = pc
 	p.mutex.Unlock()
 }
 
@@ -66,11 +66,11 @@ func (p *peerConnectionPool) releaseActiveConnection(pc peerConnection) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
-	if !p.activeConnectionIds.Contains(pc.peerAddress) {
+	if !p.activeConnectionIds.Contains(pc.remotePeerAddress) {
 		return
 	}
 
-	p.activeConnectionIds.Remove(pc.peerAddress)
+	p.activeConnectionIds.Remove(pc.remotePeerAddress)
 }
 
 func (p *peerConnectionPool) removeConnection(peerAddress string) {

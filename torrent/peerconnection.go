@@ -25,15 +25,22 @@ type peerConnection struct {
 	failedAttempts     int
 	hashFails          int
 	infoHash           [sha1.Size]byte
-	peerAddress        string
-	peerId             string
+	peerId             [20]byte
 	peerExtensions     map[extension]uint8
+	remotePeerAddress  string
+	remotePeerId       [20]byte
 	supportsExtensions bool
 	unchoked           bool
 }
 
 type peerConnectionInitConfig struct {
 	bitfieldSize int
+}
+
+type peerConnectionOpts struct {
+	infoHash   [sha1.Size]byte
+	peerId     [20]byte
+	remotePeer peer
 }
 
 type readWriteMutex struct {
@@ -58,10 +65,11 @@ const (
 	peerConnectionMaxFailedAttempts = 3
 )
 
-func newPeerConnection(pe peer, infoHash [sha1.Size]byte) *peerConnection {
+func newPeerConnection(opts peerConnectionOpts) *peerConnection {
 	return &peerConnection{
-		infoHash:    infoHash,
-		peerAddress: fmt.Sprintf("%s:%d", pe.ipAddress, pe.port),
+		infoHash:          opts.infoHash,
+		remotePeerAddress: fmt.Sprintf("%s:%d", opts.remotePeer.ipAddress, opts.remotePeer.port),
+		peerId:            opts.peerId,
 	}
 }
 
@@ -88,7 +96,6 @@ func generateBlockRequestPayload(block block) []byte {
 }
 
 func (p *peerConnection) completeBaseHandshake() error {
-	peerId := []byte(utils.GenerateRandomString(20, ""))
 	messageBuffer := make([]byte, handshakeMessageLen)
 	messageBuffer[0] = byte(pstrLen)
 
@@ -101,7 +108,7 @@ func (p *peerConnection) completeBaseHandshake() error {
 
 	index += copy(messageBuffer[index:], make([]byte, 2))
 	index += copy(messageBuffer[index:], p.infoHash[:])
-	index += copy(messageBuffer[index:], peerId[:])
+	index += copy(messageBuffer[index:], p.peerId[:])
 
 	if _, err := utils.ConnWriteFull(p.conn, messageBuffer, 0); err != nil {
 		return fmt.Errorf("failed to send base handshake message: %w", err)
@@ -137,7 +144,10 @@ func (p *peerConnection) completeBaseHandshake() error {
 	}
 
 	peerIdStartIndex := 48
-	p.peerId = string(responseBuffer[peerIdStartIndex:])
+	remotePeerId := [20]byte{}
+	copy(remotePeerId[:], responseBuffer[peerIdStartIndex:])
+
+	p.remotePeerId = remotePeerId
 
 	return nil
 }
@@ -164,7 +174,7 @@ func (p *peerConnection) downloadBlock(requestedBlock block, resultsQueue chan<-
 	var downloadedBlock block
 	var mainError error
 
-	for i := 0; i < retries; i++ {
+	for range retries {
 		payload := generateBlockRequestPayload(requestedBlock)
 
 		mutex.writer.Lock()
@@ -172,7 +182,7 @@ func (p *peerConnection) downloadBlock(requestedBlock block, resultsQueue chan<-
 		mutex.writer.Unlock()
 
 		if err != nil {
-			mainError = fmt.Errorf("failed to send 'Request' message to peer: %w", err)
+			mainError = fmt.Errorf("failed to send 'Request' message to peer at address %s for block (pieceIndex: %d, begin: %d, length: %d): %w", p.remotePeerAddress, requestedBlock.pieceIndex, requestedBlock.begin, requestedBlock.length, err)
 			continue
 		}
 
@@ -538,7 +548,7 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 
 	if !p.hasPiece(piece.index) {
 		// todo: should this be treated as an error?
-		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.peerAddress, piece.index)
+		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.remotePeerAddress, piece.index)
 	}
 
 	if err := p.sendInterestAndAwaitUnchokeMessage(); err != nil {
@@ -594,7 +604,7 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 		return nil
 	}
 
-	conn, err := net.DialTimeout("tcp", p.peerAddress, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", p.remotePeerAddress, 5*time.Second)
 
 	if err != nil {
 		return fmt.Errorf("failed to initialized peer connection: %w", err)
