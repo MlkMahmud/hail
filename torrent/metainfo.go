@@ -182,7 +182,7 @@ func parseInfoDict(infoDict map[string]any) (*torrentInfo, error) {
 	}, nil
 }
 
-func newTorrentFromMetainfoFile(data []byte, peerId [20]byte) (*Torrent, error) {
+func newTorrentFromMetainfoFile(data []byte, opts NewTorrentOpts) (*Torrent, error) {
 	var torrent Torrent
 
 	decodedValue, _, err := bencode.DecodeValue(data)
@@ -237,7 +237,8 @@ func newTorrentFromMetainfoFile(data []byte, peerId [20]byte) (*Torrent, error) 
 
 	torrent.info = torrentInfo
 	torrent.infoHash = sha1.Sum([]byte(bencodedValue))
-	torrent.peerId = peerId
+	torrent.peerId = opts.PeerId
+	torrent.outputDir = opts.OutputDir
 
 	torrent.metadataDownloadCompletedCh = make(chan struct{}, 1)
 	torrent.piecesDownloadCompleteCh = make(chan struct{}, 1)

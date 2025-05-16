@@ -41,6 +41,12 @@ const (
 	seeding
 )
 
+type NewTorrentOpts struct {
+	PeerId    [20]byte
+	OutputDir string
+	Src       string
+}
+
 type Torrent struct {
 	info     *torrentInfo
 	infoHash [sha1.Size]byte
@@ -69,21 +75,22 @@ type Torrent struct {
 	metadataDownloadCompletedMu sync.Mutex
 	metadataPeersCh             chan peerConnection
 	peerConnectionPool          *peerConnectionPool
+	outputDir                   string
 	status                      torrentStatus
 }
 
-func NewTorrent(src string, peerId [20]byte) (*Torrent, error) {
-	if utils.FileExists(src) {
-		fileContent, err := os.ReadFile(src)
+func NewTorrent(opts NewTorrentOpts) (*Torrent, error) {
+	if utils.FileExists(opts.Src) {
+		fileContent, err := os.ReadFile(opts.Src)
 
 		if err != nil {
-			return nil, fmt.Errorf("failed to read torrent file '%s' :%w", src, err)
+			return nil, fmt.Errorf("failed to read torrent file '%s' :%w", opts.Src, err)
 		}
 
-		return newTorrentFromMetainfoFile(fileContent, peerId)
+		return newTorrentFromMetainfoFile(fileContent, opts)
 	}
 
-	parsedUrl, err := url.Parse(src)
+	parsedUrl, err := url.Parse(opts.Src)
 
 	if err != nil {
 		return nil, fmt.Errorf("torrent src must be a path to a \".torrent\" file or a URL")
@@ -92,10 +99,10 @@ func NewTorrent(src string, peerId [20]byte) (*Torrent, error) {
 	switch parsedUrl.Scheme {
 	case "http", "https":
 		{
-			resp, err := http.DefaultClient.Get(src)
+			resp, err := http.DefaultClient.Get(opts.Src)
 
 			if err != nil {
-				return nil, fmt.Errorf("failed to fetch torrent file from URL '%s': %w", src, err)
+				return nil, fmt.Errorf("failed to fetch torrent file from URL '%s': %w", opts.Src, err)
 			}
 
 			defer resp.Body.Close()
@@ -103,26 +110,26 @@ func NewTorrent(src string, peerId [20]byte) (*Torrent, error) {
 			statusOK := resp.StatusCode >= 200 && resp.StatusCode < 300
 
 			if !statusOK {
-				return nil, fmt.Errorf("received NON-OK HTTP status code \"%d\" while attempting to fetch torrent file from URL '%s'. Please check the URL or try again later", resp.StatusCode, src)
+				return nil, fmt.Errorf("received NON-OK HTTP status code \"%d\" while attempting to fetch torrent file from URL '%s'. Please check the URL or try again later", resp.StatusCode, opts.Src)
 			}
 
 			content, err := io.ReadAll(resp.Body)
 
 			if err != nil {
-				return nil, fmt.Errorf("failed to read HTTP response body from URL '%s': %w", src, err)
+				return nil, fmt.Errorf("failed to read HTTP response body from URL '%s': %w", opts.Src, err)
 			}
 
-			return newTorrentFromMetainfoFile(content, peerId)
+			return newTorrentFromMetainfoFile(content, opts)
 		}
 
 	case "magnet":
 		{
-			return newTorrentFromMagnetURL(parsedUrl, peerId)
+			return newTorrentFromMagnetURL(parsedUrl, opts)
 		}
 
 	default:
 		{
-			return nil, fmt.Errorf("unsupported torrent URL scheme \"%s\". The URL scheme must be one of \"http\", \"https\", or \"magnet\". Please check the provided URL: '%s'", parsedUrl.Scheme, src)
+			return nil, fmt.Errorf("unsupported torrent URL scheme \"%s\". The URL scheme must be one of \"http\", \"https\", or \"magnet\". Please check the provided URL: '%s'", parsedUrl.Scheme, opts.Src)
 		}
 	}
 }
@@ -406,7 +413,7 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 }
 
 func (tr *Torrent) startPieceDownloader(ctx context.Context) {
-	maxConcurrency := 10
+	maxConcurrency := 5
 	sem := utils.NewSemaphore(maxConcurrency)
 
 	for {
@@ -416,8 +423,6 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 
 		default:
 			{
-				fmt.Println("starting a piece downloader")
-
 				sem.Acquire()
 				conn, err := tr.peerConnectionPool.getIdleConnection(ctx)
 
@@ -513,13 +518,19 @@ func (tr *Torrent) startPieceWriter(ctx context.Context, piecesDir string) {
 	}
 }
 
-func (tr *Torrent) writeFilesToDisk(ctx context.Context, piecesDir string) {
+func (tr *Torrent) writeFilesToDisk(ctx context.Context, piecesDir string) error {
 	for _, file := range tr.info.files {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		default:
-			dest, err := os.OpenFile(file.name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+			err := os.MkdirAll(tr.outputDir, 0755)
+
+			if err != nil {
+				return err
+			}
+
+			dest, err := os.Create(filepath.Join(tr.outputDir, file.name))
 
 			if err != nil {
 				fmt.Printf("failed to create file '%s': %v\n", file.name, err)
@@ -531,7 +542,7 @@ func (tr *Torrent) writeFilesToDisk(ctx context.Context, piecesDir string) {
 				case <-ctx.Done():
 					fmt.Println("context canceled, stopping file writing...")
 					dest.Close()
-					return
+					return nil
 				default:
 					isInitialPiece := file.pieceStartIndex == index
 					path := filepath.Join(piecesDir, fmt.Sprintf("%020d.piece", index))
@@ -574,6 +585,8 @@ func (tr *Torrent) writeFilesToDisk(ctx context.Context, piecesDir string) {
 			dest.Close()
 		}
 	}
+
+	return nil
 }
 
 func (tr *Torrent) ID() string {
@@ -637,8 +650,12 @@ func (t *Torrent) Start() {
 		return
 	case <-t.piecesDownloadCompleteCh:
 		cancelDownloader()
-		t.writeFilesToDisk(ctx, tempDir)
-		fmt.Println("successfully written all files to disk.")
+		if err := t.writeFilesToDisk(ctx, tempDir); err != nil {
+			fmt.Printf("failed to write files to disk: %v\n", err)
+		} else {
+			fmt.Println("successfully written all files to disk.")
+		}
+
 		shutdownFn()
 	}
 }

@@ -18,8 +18,12 @@ func NewSession(id [20]byte) *session {
 	}
 }
 
-func (s *session) AddTorrent(src string) error {
-	tr, err := torrent.NewTorrent(src, s.id)
+func (s *session) AddTorrent(src string, outputDir string) error {
+	tr, err := torrent.NewTorrent(torrent.NewTorrentOpts{
+		PeerId:    s.id,
+		OutputDir: outputDir,
+		Src:       src,
+	})
 
 	if err != nil {
 		return fmt.Errorf("unable to add torrent to session from source %s: %w", src, err)

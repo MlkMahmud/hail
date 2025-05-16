@@ -50,7 +50,7 @@ func parseInfoHashParameter(xtParameter string) ([sha1.Size]byte, error) {
 	return infoHash, nil
 }
 
-func newTorrentFromMagnetURL(magnetURL *url.URL, peerId [20]byte) (*Torrent, error) {
+func newTorrentFromMagnetURL(magnetURL *url.URL, opts NewTorrentOpts) (*Torrent, error) {
 	var torrent Torrent
 
 	if magnetURL.Scheme != "magnet" {
@@ -84,7 +84,8 @@ func newTorrentFromMagnetURL(magnetURL *url.URL, peerId [20]byte) (*Torrent, err
 	}
 
 	torrent.infoHash = infoHash
-	torrent.peerId = peerId
+	torrent.peerId = opts.PeerId
+	torrent.outputDir = opts.OutputDir
 
 	torrent.metadataDownloadCompletedCh = make(chan struct{}, 1)
 	torrent.piecesDownloadCompleteCh = make(chan struct{}, 1)
