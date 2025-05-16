@@ -52,6 +52,7 @@ func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 
 	numOfFiles := len(filesList)
 	files := make([]file, numOfFiles)
+	totalLength := 0
 
 	pieceLength := infoDict["piece length"].(int)
 	pieces := infoDict["pieces"].(string)
@@ -68,7 +69,10 @@ func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 			return nil, fmt.Errorf("files list contains an invalid entry at index '%d'", i)
 		}
 
-		if _, ok := entry["length"].(int); !ok {
+		fileLength, ok := entry["length"].(int)
+		totalLength += fileLength
+
+		if !ok {
 			return nil, fmt.Errorf("files list entry at index '%d' contains an invalid 'length' property", i)
 		}
 
@@ -87,9 +91,7 @@ func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 			pathList[index] = entry.(string)
 		}
 
-		fileLength := entry["length"].(int)
 		path := filepath.Join(pathList...)
-
 		pieceStartIndex := piecesIndex / sha1.Size
 		pieceEndIndex := pieceStartIndex + (fileLength / pieceLength)
 
@@ -123,6 +125,7 @@ func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 
 	return &torrentInfo{
 		files:  files,
+		length: totalLength,
 		pieces: piecesArr,
 	}, nil
 }
@@ -177,6 +180,7 @@ func parseInfoDict(infoDict map[string]any) (*torrentInfo, error) {
 
 	return &torrentInfo{
 		files:  files,
+		length: fileLength,
 		name:   infoDict["name"].(string),
 		pieces: result.pieces,
 	}, nil
@@ -250,7 +254,7 @@ func newTorrentFromMetainfoFile(data []byte, opts NewTorrentOpts) (*Torrent, err
 	torrent.peers = make(map[string]peer)
 	torrent.failingPeers = make(map[string]peer)
 
-	torrent.downloadedPieces = make(chan downloadedPiece, 10)
+	torrent.downloadedPieceCh = make(chan downloadedPiece, 10)
 	torrent.failedPiecesCh = make(chan piece, 10)
 	torrent.queuedPiecesCh = make(chan piece, 10)
 

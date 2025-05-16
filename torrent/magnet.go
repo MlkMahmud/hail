@@ -97,7 +97,7 @@ func newTorrentFromMagnetURL(magnetURL *url.URL, opts NewTorrentOpts) (*Torrent,
 	torrent.peers = make(map[string]peer)
 	torrent.failingPeers = make(map[string]peer)
 
-	torrent.downloadedPieces = make(chan downloadedPiece, 10)
+	torrent.downloadedPieceCh = make(chan downloadedPiece, 10)
 	torrent.failedPiecesCh = make(chan piece, 10)
 	torrent.queuedPiecesCh = make(chan piece, 10)
 

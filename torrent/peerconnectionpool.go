@@ -34,8 +34,6 @@ func (p *peerConnectionPool) closeConnections() {
 	for _, pc := range p.connections {
 		pc.close()
 	}
-
-	fmt.Println("successfully closed all peer connections.")
 }
 
 func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (peerConnection, error) {
@@ -54,23 +52,12 @@ func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (peerConnect
 
 		select {
 		case <-ctx.Done():
-			return peerConnection{}, fmt.Errorf("context canceled: %w", ctx.Err())
+			return peerConnection{}, fmt.Errorf("failed to find idle peer connection: %w", ctx.Err())
 		default:
 			// todo: add trigger to find more peers
 			time.Sleep(2 * time.Second)
 		}
 	}
-}
-
-func (p *peerConnectionPool) releaseActiveConnection(pc peerConnection) {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-
-	if !p.activeConnectionIds.Contains(pc.remotePeerAddress) {
-		return
-	}
-
-	p.activeConnectionIds.Remove(pc.remotePeerAddress)
 }
 
 func (p *peerConnectionPool) removeConnection(peerAddress string) {

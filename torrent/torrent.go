@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,10 +36,14 @@ type torrentInfo struct {
 type torrentStatus int
 
 const (
-	connecting torrentStatus = iota
+	initializing torrentStatus = iota
+	connecting
+	downloadingMetadata
 	downloading
 	finished
-	seeding
+	flushing
+	completed
+	stopped
 )
 
 type NewTorrentOpts struct {
@@ -47,19 +52,22 @@ type NewTorrentOpts struct {
 	Src       string
 }
 
+// todo: use mutexes to wrap properties accessed by multiple goroutines
 type Torrent struct {
-	info     *torrentInfo
+	info *torrentInfo
+
 	infoHash [sha1.Size]byte
 
 	bannedPeersCh               chan string
-	downloadedPieces            chan downloadedPiece
+	connectedCh                 chan struct{}
+	downloadedPieceCh           chan downloadedPiece
 	failedPiecesCh              chan piece
 	incomingPeersCh             chan []peer
 	metadataDownloadCompletedCh chan struct{}
 	piecesDownloadCompleteCh    chan struct{}
 	queuedPiecesCh              chan piece
 	statusCh                    chan torrentStatus
-	stoppedCh                   chan bool
+	stoppedCh                   chan struct{}
 
 	bannedPeers     utils.Set
 	failingTrackers utils.Set
@@ -68,9 +76,11 @@ type Torrent struct {
 	failingPeers map[string]peer
 	peers        map[string]peer
 
+	downloaded         int
+	downloadedPieces   int
 	maxPeerConnections int
-	peerId             [20]byte
 
+	peerId                      [20]byte
 	metadataDownloadCompleted   bool
 	metadataDownloadCompletedMu sync.Mutex
 	metadataPeersCh             chan peerConnection
@@ -194,14 +204,7 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 		case peers := <-tr.incomingPeersCh:
 			{
 				for _, peer := range peers {
-					if tr.peerConnectionPool.size() >= tr.maxPeerConnections {
-						// todo: place a limit on the number of idle peers
-						tr.peers[peer.String()] = peer
-						break
-					}
-
 					if _, ok := tr.peerConnectionPool.connections[peer.String()]; ok {
-						fmt.Println("peer already exists in connection pool")
 						continue
 					}
 
@@ -211,7 +214,12 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 						remotePeer: peer,
 					})
 
-					tr.peerConnectionPool.addConnection(*pc)
+					// todo: place a limit on the number of idle peers
+					tr.peers[peer.String()] = peer
+
+					if tr.peerConnectionPool.size() < tr.maxPeerConnections {
+						tr.peerConnectionPool.addConnection(*pc)
+					}
 
 					select {
 					case <-tr.metadataDownloadCompletedCh:
@@ -235,8 +243,25 @@ func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
 		case status := <-tr.statusCh:
 			{
 				tr.status = status
+				switch status {
+				case completed:
+					log.Println("torrent download has completed.")
+				case connecting:
+					log.Println("connecting to peers...")
+				case downloading:
+					log.Println("downloading torrent files...")
+				case downloadingMetadata:
+					log.Println("downloading metadata...")
+				case finished:
+					log.Println("finished downloading all pieces")
+				case flushing:
+					log.Println("writing downloaded pieces to disk...")
+				case stopped:
+					log.Println("stopping torrent...")
+				}
 			}
 		}
+
 	}
 }
 
@@ -252,6 +277,15 @@ func (tr *Torrent) markMetadataDownloadCompleted() {
 		close(tr.metadataDownloadCompletedCh)
 		tr.metadataDownloadCompleted = true
 	}
+}
+
+func (tr *Torrent) printProgress() {
+	var progress float64
+
+	if tr.info.length > 0 {
+		progress = float64(tr.downloaded) / float64(tr.info.length) * 100
+	}
+	log.Printf("(%.2f%%) downloaded %d piece(s) from %d peers\n", progress, tr.downloadedPieces, tr.peerConnectionPool.size())
 }
 
 // startAnnouncer starts the announcer routine for the Torrent instance.
@@ -279,6 +313,7 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 	// todo: handle failed trackers
 	announceInterval := 3 * time.Second
 	ticker := time.NewTicker(announceInterval)
+	tr.updateStatus(connecting)
 
 	defer ticker.Stop()
 
@@ -297,8 +332,6 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 				maxConcurrency := 5
 				sem := utils.NewSemaphore(maxConcurrency)
 
-				fmt.Println("discovering peers....")
-
 				for trackerUrl := range tr.trackers.Entries() {
 					wg.Add(1)
 					sem.Acquire()
@@ -310,7 +343,7 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 						peers, err := tr.sendAnnounceRequest(trackerUrl)
 
 						if err != nil {
-							fmt.Println(err.Error())
+							log.Printf("announce request failed: %v", err)
 							return
 						}
 
@@ -363,21 +396,23 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 			{
 				// todo: add debug logs
 				if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: 0}); err != nil {
-					fmt.Println(err)
+					log.Println(err)
 					break
 				}
 
 				defer pc.close()
 
 				if !pc.supportsExtension(metadataExt) {
-					fmt.Printf("peer connection \"%s\" does not support the metadata extension\n", pc.remotePeerAddress)
+					log.Printf("peer connection \"%s\" does not support the metadata extension\n", pc.remotePeerAddress)
 					break
 				}
+
+				tr.updateStatus(downloadingMetadata)
 
 				metadata, err := pc.downloadMetadata()
 
 				if err != nil {
-					fmt.Println(err)
+					log.Println(err)
 					break
 				}
 
@@ -415,6 +450,7 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 	maxConcurrency := 5
 	sem := utils.NewSemaphore(maxConcurrency)
+	tr.updateStatus(downloading)
 
 	for {
 		select {
@@ -426,10 +462,16 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 				sem.Acquire()
 				conn, err := tr.peerConnectionPool.getIdleConnection(ctx)
 
-				if err != nil {
-					fmt.Println(err)
+				select {
+				case <-ctx.Done():
 					sem.Release()
-					break
+					return
+				default:
+					if err != nil {
+						log.Println(err)
+						sem.Release()
+						break
+					}
 				}
 
 				go func(pc peerConnection, tr *Torrent) {
@@ -444,10 +486,8 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 
 						case piece := <-tr.queuedPiecesCh:
 							{
-								fmt.Println("downloading pieces")
-
 								if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: len(tr.info.pieces)}); err != nil {
-									fmt.Println(err)
+									log.Println(err)
 									tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
 									return
 								}
@@ -456,15 +496,12 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 
 								if err != nil && pc.failedAttempts >= peerConnectionMaxFailedAttempts {
 									// todo: send to 'failedPeersCh"
-									fmt.Printf("failed to downloaded piece: '%d'\n", piece.index)
-									fmt.Printf("removing peer connection: \"%s\"\n", pc.remotePeerAddress)
 									tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
 									return
 								}
 
 								if err != nil {
-									fmt.Println(err)
-									fmt.Printf("failed to downloaded piece: '%d'\n", piece.index)
+									log.Println(err)
 									pc.failedAttempts += 1
 									tr.failedPiecesCh <- piece
 									continue
@@ -472,15 +509,13 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 
 								if err := downloadedPiece.validateIntegrity(); err != nil {
 									// todo: do we simple increment the fail count for peer that send piece that fail the hash check?
-									fmt.Println(err)
-									fmt.Printf("failed to downloaded piece: '%d'\n", piece.index)
+									log.Println(err)
 									pc.failedAttempts += 1
 									tr.failedPiecesCh <- piece
 									continue
 								}
 
-								fmt.Printf("successfully downloaded piece %d\n", piece.index)
-								tr.downloadedPieces <- *downloadedPiece
+								tr.downloadedPieceCh <- *downloadedPiece
 							}
 						}
 					}
@@ -491,25 +526,25 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 }
 
 func (tr *Torrent) startPieceWriter(ctx context.Context, piecesDir string) {
-	numOfDownloadedPieces := 0
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		case downloadedPiece := <-tr.downloadedPieces:
+		case downloadedPiece := <-tr.downloadedPieceCh:
 			{
-				fmt.Printf("starting piece writer for piece \"%d\"\n", downloadedPiece.piece.index)
-
 				if err := downloadedPiece.writeToDisk(piecesDir); err != nil {
+					log.Printf("failed to write piece #%d to disk\n", downloadedPiece.piece.index)
 					tr.failedPiecesCh <- downloadedPiece.piece
+					continue
 				}
 
-				numOfDownloadedPieces += 1
+				tr.downloaded += downloadedPiece.piece.length
+				tr.downloadedPieces += 1
+				tr.printProgress()
 
-				if numOfDownloadedPieces >= len(tr.info.pieces) {
-					tr.piecesDownloadCompleteCh <- struct{}{}
+				if tr.downloadedPieces >= len(tr.info.pieces) {
+					tr.updateStatus(finished)
 					close(tr.piecesDownloadCompleteCh)
 					return
 				}
@@ -518,7 +553,16 @@ func (tr *Torrent) startPieceWriter(ctx context.Context, piecesDir string) {
 	}
 }
 
+func (tr *Torrent) updateStatus(status torrentStatus) {
+	// todo: wrap status read op with mutex
+	if tr.status != status {
+		tr.statusCh <- status
+	}
+}
+
 func (tr *Torrent) writeFilesToDisk(ctx context.Context, piecesDir string) error {
+	tr.updateStatus(flushing)
+
 	for _, file := range tr.info.files {
 		select {
 		case <-ctx.Done():
@@ -533,14 +577,12 @@ func (tr *Torrent) writeFilesToDisk(ctx context.Context, piecesDir string) error
 			dest, err := os.Create(filepath.Join(tr.outputDir, file.name))
 
 			if err != nil {
-				fmt.Printf("failed to create file '%s': %v\n", file.name, err)
-				continue
+				return fmt.Errorf("failed to create file '%s': %w\n", file.name, err)
 			}
 
 			for index := file.pieceStartIndex; index <= file.pieceEndIndex; index++ {
 				select {
 				case <-ctx.Done():
-					fmt.Println("context canceled, stopping file writing...")
 					dest.Close()
 					return nil
 				default:
@@ -555,29 +597,23 @@ func (tr *Torrent) writeFilesToDisk(ctx context.Context, piecesDir string) error
 					fptr, err := os.Open(path)
 
 					if err != nil {
-						fmt.Printf("failed to open file '%s': %v\n", path, err)
-						break
+						return fmt.Errorf("failed to open file '%s': %w\n", path, err)
 					}
 
+					defer fptr.Close()
+
 					if _, err := fptr.Seek(int64(offset), io.SeekStart); err != nil {
-						fmt.Printf("failed to seek to offset %d in file '%s': %v\n", offset, path, err)
-						fptr.Close()
-						break
+						return fmt.Errorf("failed to seek to offset %d in file '%s': %w\n", offset, path, err)
 					}
 
 					content, err := io.ReadAll(fptr)
 
 					if err != nil {
-						fmt.Printf("failed to read data from file '%s': %v\n", path, err)
-						fptr.Close()
-						break
+						return fmt.Errorf("failed to read data from file '%s': %w\n", path, err)
 					}
 
-					fptr.Close()
-
 					if _, err := dest.Write(content); err != nil {
-						fmt.Printf("failed to write data from piece '%d' to file '%s': '%v'\n", index, dest.Name(), err)
-						break
+						return fmt.Errorf("failed to write data from piece '%d' to file '%s': %w\n", index, dest.Name(), err)
 					}
 				}
 			}
@@ -605,16 +641,19 @@ func (t *Torrent) Start() {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	downloaderCtx, cancelDownloader := context.WithCancel(ctx)
 
-	t.stoppedCh = make(chan bool, 1)
+	t.downloaded = 0
+	t.downloadedPieces = 0
+	t.stoppedCh = make(chan struct{}, 1)
+
+	go t.handleStatusUpdate(ctx)
 
 	go t.startAnnouncer(ctx)
 	go t.handleIncomingPeers(ctx)
-	go t.handleStatusUpdate(ctx)
 	go t.handleBannedPeers(ctx)
 	go t.startMetadataDownloader(ctx)
 
-	shutdownFn := func() {
-		fmt.Println("stopping torrent...")
+	shutdownFn := func(status torrentStatus) {
+		t.updateStatus(status)
 		cancelDownloader()
 		cancelCtx()
 		t.peerConnectionPool.closeConnections()
@@ -624,7 +663,7 @@ func (t *Torrent) Start() {
 
 	select {
 	case <-t.stoppedCh:
-		shutdownFn()
+		shutdownFn(stopped)
 		return
 
 	case <-t.metadataDownloadCompletedCh:
@@ -632,8 +671,8 @@ func (t *Torrent) Start() {
 		tempDir = dir
 
 		if err != nil {
-			fmt.Printf("failed to create temporary directory for torrent '%s': %v\n", t.info.name, err)
-			shutdownFn()
+			log.Printf("failed to create pieces directory for torrent '%s': %v\n", t.info.name, err)
+			shutdownFn(stopped)
 			return
 		}
 
@@ -646,17 +685,18 @@ func (t *Torrent) Start() {
 
 	select {
 	case <-t.stoppedCh:
-		shutdownFn()
-		return
+		shutdownFn(stopped)
+
 	case <-t.piecesDownloadCompleteCh:
-		cancelDownloader()
-		if err := t.writeFilesToDisk(ctx, tempDir); err != nil {
-			fmt.Printf("failed to write files to disk: %v\n", err)
-		} else {
-			fmt.Println("successfully written all files to disk.")
+		err := t.writeFilesToDisk(ctx, tempDir)
+		status := completed
+
+		if err != nil {
+			log.Printf("failed to write files to disk: %v\n", err)
+			status = stopped
 		}
 
-		shutdownFn()
+		shutdownFn(status)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"sync"
@@ -618,7 +619,7 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 	}
 
 	if err := p.parseBitFieldMessage(); err != nil {
-		fmt.Printf("failed to receive 'Bitfield' message from peer: %v", err)
+		log.Printf("failed to receive 'Bitfield' message from peer: %v", err)
 		return nil
 	}
 
