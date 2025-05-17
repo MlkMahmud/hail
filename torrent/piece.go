@@ -22,9 +22,10 @@ type downloadedPiece struct {
 }
 
 type piece struct {
-	index  int
-	hash   [sha1.Size]byte
-	length int
+	fileIndexes []int
+	index       int
+	hash        [sha1.Size]byte
+	length      int
 }
 
 type piecesParserResult struct {

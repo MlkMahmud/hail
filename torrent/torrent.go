@@ -59,7 +59,6 @@ type Torrent struct {
 	infoHash [sha1.Size]byte
 
 	bannedPeersCh               chan string
-	connectedCh                 chan struct{}
 	downloadedPieceCh           chan downloadedPiece
 	failedPiecesCh              chan piece
 	incomingPeersCh             chan []peer
@@ -577,7 +576,7 @@ func (tr *Torrent) writeFilesToDisk(ctx context.Context, piecesDir string) error
 			dest, err := os.Create(filepath.Join(tr.outputDir, file.name))
 
 			if err != nil {
-				return fmt.Errorf("failed to create file '%s': %w\n", file.name, err)
+				return fmt.Errorf("failed to create file '%s': %w", file.name, err)
 			}
 
 			for index := file.pieceStartIndex; index <= file.pieceEndIndex; index++ {
@@ -597,23 +596,23 @@ func (tr *Torrent) writeFilesToDisk(ctx context.Context, piecesDir string) error
 					fptr, err := os.Open(path)
 
 					if err != nil {
-						return fmt.Errorf("failed to open file '%s': %w\n", path, err)
+						return fmt.Errorf("failed to open file '%s': %w", path, err)
 					}
 
 					defer fptr.Close()
 
 					if _, err := fptr.Seek(int64(offset), io.SeekStart); err != nil {
-						return fmt.Errorf("failed to seek to offset %d in file '%s': %w\n", offset, path, err)
+						return fmt.Errorf("failed to seek to offset %d in file '%s': %w", offset, path, err)
 					}
 
 					content, err := io.ReadAll(fptr)
 
 					if err != nil {
-						return fmt.Errorf("failed to read data from file '%s': %w\n", path, err)
+						return fmt.Errorf("failed to read data from file '%s': %w", path, err)
 					}
 
 					if _, err := dest.Write(content); err != nil {
-						return fmt.Errorf("failed to write data from piece '%d' to file '%s': %w\n", index, dest.Name(), err)
+						return fmt.Errorf("failed to write data from piece '%d' to file '%s': %w", index, dest.Name(), err)
 					}
 				}
 			}
