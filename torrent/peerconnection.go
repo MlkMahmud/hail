@@ -570,11 +570,11 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 		numOfPendingBlocks := len(pendingBlocks)
 		currentBatchSize := min(numOfPendingBlocks, maxBatchSize)
 
-		for i := 0; i < currentBatchSize; i++ {
+		for i := range currentBatchSize {
 			go p.downloadBlock(pendingBlocks[i], resultsQueue, &mutex)
 		}
 
-		for i := 0; i < currentBatchSize; i++ {
+		for range currentBatchSize {
 			result := <-resultsQueue
 
 			if result.err != nil {

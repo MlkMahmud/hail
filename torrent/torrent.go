@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -555,7 +556,7 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 
 				for fileIndex := range downloadedPiece.piece.fileIndexes {
 					file := tr.info.files[fileIndex]
-					fptr, err := os.OpenFile(file.name, os.O_CREATE|os.O_WRONLY, 0666)
+					fptr, err := os.OpenFile(filepath.Join(tr.outputDir, file.name), os.O_CREATE|os.O_WRONLY, 0666)
 
 					//todo: handle error
 					if err != nil {

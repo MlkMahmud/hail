@@ -186,11 +186,10 @@ func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, tran
 
 func (tr *Torrent) sendHTTPAnnounceRequest(trackerURL string) ([]peer, error) {
 	params := url.Values{}
-	length := tr.info.length
+	length := 999
 
-	if length == 0 {
-		// set length to a random value if the length of the torrent file is not known yet
-		length = 999
+	if tr.info != nil {
+		length = tr.info.length
 	}
 
 	params.Add("info_hash", string(tr.infoHash[:]))
