@@ -186,11 +186,11 @@ func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, tran
 
 func (tr *Torrent) sendHTTPAnnounceRequest(trackerURL string) ([]peer, error) {
 	params := url.Values{}
-	// set length to a random value if the length of the torrent file is not known yet
-	length := 999
+	length := tr.info.length
 
-	if tr.info != nil {
-		length = tr.info.length
+	if length == 0 {
+		// set length to a random value if the length of the torrent file is not known yet
+		length = 999
 	}
 
 	params.Add("info_hash", string(tr.infoHash[:]))
@@ -202,8 +202,9 @@ func (tr *Torrent) sendHTTPAnnounceRequest(trackerURL string) ([]peer, error) {
 	params.Add("compact", "1")
 
 	querystring := params.Encode()
+	requestURL := fmt.Sprintf("%s?%s", trackerURL, querystring)
 
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s?%s", trackerURL, querystring), nil)
+	req, err := http.NewRequest("GET", requestURL, nil)
 
 	if err != nil {
 		return nil, err
@@ -226,13 +227,7 @@ func (tr *Torrent) sendHTTPAnnounceRequest(trackerURL string) ([]peer, error) {
 		}
 	}
 
-	peers, err := tr.parseHTTPAnnounceResponse(trackerResponse)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return peers, nil
+	return tr.parseHTTPAnnounceResponse(trackerResponse)
 }
 
 /*
@@ -444,31 +439,12 @@ func (tr *Torrent) sendAnnounceRequest(trackerUrl string) ([]peer, error) {
 
 	switch parsedURL.Scheme {
 	case "http", "https":
-		{
-			peers, err := tr.sendHTTPAnnounceRequest(trackerUrl)
-
-			if err != nil {
-				return nil, err
-			}
-
-			return peers, nil
-		}
+		return tr.sendHTTPAnnounceRequest(trackerUrl)
 
 	case "udp":
-		{
-			peers, err := tr.sendUDPAnnounceRequest(trackerUrl)
-
-			if err != nil {
-				return nil, err
-			}
-
-			return peers, nil
-		}
+		return tr.sendUDPAnnounceRequest(trackerUrl)
 
 	default:
-		{
-			return nil, fmt.Errorf("tracker URL protocol must be one of 'HTTP' or 'UDP'")
-		}
+		return nil, fmt.Errorf("tracker URL protocol must be one of 'HTTP' or 'UDP'")
 	}
-
 }

@@ -43,6 +43,42 @@ func parseAnnounceList(list any) (*utils.Set, error) {
 	return trackers, nil
 }
 
+func parseFileEntry(fileEntry any) (file, error) {
+	entry, ok := fileEntry.(map[string]any)
+
+	if !ok {
+		return file{}, fmt.Errorf("file entry is not a valid dictionary, received '%T'", fileEntry)
+	}
+
+	fileLength, ok := entry["length"].(int)
+
+	if !ok {
+		return file{}, fmt.Errorf("file entry is missing or has an invalid 'length' property, expected an integer but received '%T'", entry["length"])
+	}
+
+	paths, ok := entry["path"].([]any)
+
+	if !ok || len(paths) < 1 {
+		return file{}, fmt.Errorf("file entry has an invalid or empty 'path' property, expected a non-empty list but received '%T'", entry["path"])
+	}
+
+	pathList := make([]string, len(paths))
+
+	for j, pathEntry := range paths {
+		pathStr, ok := pathEntry.(string)
+
+		if !ok {
+			return file{}, fmt.Errorf("file entry 'path' property contains an invalid component at index %d, expected a string but received '%T'", j, pathEntry)
+		}
+		pathList[j] = pathStr
+	}
+
+	return file{
+		length: fileLength,
+		name:   filepath.Join(pathList...),
+	}, nil
+}
+
 func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 	filesList, ok := infoDict["files"].([]any)
 
@@ -79,49 +115,21 @@ func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 	pieceIndex := 0
 
 	for fileIndex, fileEntry := range filesList {
-		entry, ok := fileEntry.(map[string]any)
+		entry, err := parseFileEntry(fileEntry)
 
-		if !ok {
-			return nil, fmt.Errorf("files list contains an invalid entry at index '%d'", fileIndex)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse file entry at index '%d': %w", fileIndex, err)
 		}
 
-		fileLength, ok := entry["length"].(int)
-
-		if !ok {
-			return nil, fmt.Errorf("files list entry at index '%d' contains an invalid 'length' property", fileIndex)
-		}
-
-		paths, ok := entry["path"].([]any)
-
-		if !ok {
-			return nil, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property", fileIndex)
-		}
-
-		pathList := make([]string, len(paths))
-
-		for j, pathEntry := range paths {
-			pathStr, ok := pathEntry.(string)
-
-			if !ok {
-				return nil, fmt.Errorf("files list entry at index '%d' contains an invalid 'path' property at index '%d'", fileIndex, j)
-			}
-			pathList[j] = pathStr
-		}
-
-		path := filepath.Join(pathList...)
 		pieceStartIndex := pieceIndex
-		pieceEndIndex := pieceStartIndex + (fileLength+fileOffset-1)/pieceLength
+		pieceEndIndex := pieceStartIndex + (entry.length+fileOffset-1)/pieceLength
 
-		files[fileIndex] = file{
-			length:          fileLength,
-			name:            path,
-			offset:          fileOffset,
-			pieceStartIndex: pieceStartIndex,
-			pieceEndIndex:   pieceEndIndex,
-		}
+		entry.startOffsetInFirstPiece = fileOffset
+		entry.pieceEndIndex = pieceEndIndex
+		entry.pieceStartIndex = pieceStartIndex
 
-		fileOffset = (fileLength + fileOffset) % pieceLength
-		cummulativeFilesLength += fileLength
+		fileOffset = (entry.length + fileOffset) % pieceLength
+		cummulativeFilesLength += entry.length
 
 		for index := pieceStartIndex; index <= pieceEndIndex; index++ {
 			if reflect.ValueOf(pieces[index]).IsZero() {
@@ -149,12 +157,25 @@ func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 			pieces[index].fileIndexes = append(pieces[index].fileIndexes, fileIndex)
 		}
 
+		// If the file fits entirely within a single piece
+		if fileOffset+entry.length <= pieceLength {
+			entry.endOffsetInLastPiece = entry.length
+			// If the file spans multiple pieces and does not end on the border of its last piece
+		} else if endOffset := (entry.length + fileOffset) % pieceLength; endOffset != 0 {
+			entry.endOffsetInLastPiece = endOffset
+			// If the file ends exactly at the boundary of its last piece
+		} else {
+			entry.endOffsetInLastPiece = pieces[entry.pieceEndIndex].length
+		}
+
 		// Only increment pieceIndex if the file ends exactly at the boundary of the last piece
 		if fileOffset > 0 {
 			pieceIndex = pieceEndIndex
 		} else {
 			pieceIndex = pieceEndIndex + 1
 		}
+
+		files[fileIndex] = entry
 	}
 
 	if cummulativeFilesLength != cummulativePiecesLength {
@@ -183,9 +204,7 @@ func parseInfoDict(infoDict map[string]any) (*torrentInfo, error) {
 	}
 
 	if _, ok := infoDict["files"]; ok {
-		info, err := parseFilesList(infoDict)
-
-		return info, err
+		return parseFilesList(infoDict)
 	}
 
 	if _, ok := infoDict["length"]; !ok {
@@ -198,30 +217,12 @@ func parseInfoDict(infoDict map[string]any) (*torrentInfo, error) {
 		return nil, fmt.Errorf("'length' property of metainfo info dictionary must be an integer not %T", fileLength)
 	}
 
-	pieceLength := infoDict["piece length"].(int)
-	pieceOffset := 0
-	piecesHashes := infoDict["pieces"].(string)
-
-	result, err := parsePiecesHashes(fileLength, pieceLength, pieceOffset, piecesHashes)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse pieces hashes: %w", err)
-	}
-
-	files := []file{{
-		length:          fileLength,
-		name:            infoDict["name"].(string),
-		offset:          0,
-		pieceEndIndex:   fileLength / pieceLength,
-		pieceStartIndex: 0,
+	infoDict["files"] = []any{map[string]any{
+		"length": fileLength,
+		"path":   []any{infoDict["name"].(string)},
 	}}
 
-	return &torrentInfo{
-		files:  files,
-		length: fileLength,
-		name:   infoDict["name"].(string),
-		pieces: result.pieces,
-	}, nil
+	return parseFilesList(infoDict)
 }
 
 func newTorrentFromMetainfoFile(data []byte, opts NewTorrentOpts) (*Torrent, error) {
