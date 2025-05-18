@@ -463,6 +463,7 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 	maxConcurrency := 5
 	sem := utils.NewSemaphore(maxConcurrency)
+	tr.updateStatus(downloading)
 
 	for {
 		select {
@@ -473,8 +474,6 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 			{
 				sem.Acquire()
 				conn, err := tr.peerConnectionPool.getIdleConnection(ctx)
-
-				tr.updateStatus(downloading)
 
 				select {
 				case <-ctx.Done():

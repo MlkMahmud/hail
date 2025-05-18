@@ -128,15 +128,15 @@ func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 		entry.pieceEndIndex = pieceEndIndex
 		entry.pieceStartIndex = pieceStartIndex
 
-		fileOffset = (entry.length + fileOffset) % pieceLength
 		cummulativeFilesLength += entry.length
 
 		for index := pieceStartIndex; index <= pieceEndIndex; index++ {
 			if reflect.ValueOf(pieces[index]).IsZero() {
 				hash := [sha1.Size]byte{}
 				isLastPiece := index == (numOfPieces - 1)
+				piecesStrIndex := index * sha1.Size
 
-				copy(hash[:], []byte(piecesStr[pieceIndex:pieceIndex+sha1.Size]))
+				copy(hash[:], []byte(piecesStr[piecesStrIndex:piecesStrIndex+sha1.Size]))
 				pieces[index].index = index
 				pieces[index].fileIndexes = []int{}
 				pieces[index].hash = hash
@@ -168,14 +168,15 @@ func parseFilesList(infoDict map[string]any) (*torrentInfo, error) {
 			entry.endOffsetInLastPiece = pieces[entry.pieceEndIndex].length
 		}
 
+		fileOffset = (entry.length + fileOffset) % pieceLength
+		files[fileIndex] = entry
+
 		// Only increment pieceIndex if the file ends exactly at the boundary of the last piece
 		if fileOffset > 0 {
 			pieceIndex = pieceEndIndex
 		} else {
 			pieceIndex = pieceEndIndex + 1
 		}
-
-		files[fileIndex] = entry
 	}
 
 	if cummulativeFilesLength != cummulativePiecesLength {
