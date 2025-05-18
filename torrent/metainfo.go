@@ -3,6 +3,7 @@ package torrent
 import (
 	"crypto/sha1"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -218,12 +219,14 @@ func parseInfoDict(infoDict map[string]any) (*torrentInfo, error) {
 		return nil, fmt.Errorf("'length' property of metainfo info dictionary must be an integer not %T", fileLength)
 	}
 
-	infoDict["files"] = []any{map[string]any{
-		"length": fileLength,
-		"path":   []any{infoDict["name"].(string)},
-	}}
-
-	return parseFilesList(infoDict)
+	infoDictWithFilesList := maps.Clone(infoDict)
+	infoDictWithFilesList["files"] = []any{
+		map[string]any{
+			"length": fileLength,
+			"path":   []any{infoDict["name"].(string)},
+		},
+	}
+	return parseFilesList(infoDictWithFilesList)
 }
 
 func newTorrentFromMetainfoFile(data []byte, opts NewTorrentOpts) (*Torrent, error) {
