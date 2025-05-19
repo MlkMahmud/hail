@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -18,30 +17,11 @@ import (
 	"github.com/MlkMahmud/hail/utils"
 )
 
-type file struct {
-	// The total length of the file in bytes.
-	length int
-
-	// The name or path of the file.
-	name string
-
-	// The index of the first piece that contains data for this file.
-	pieceStartIndex int
-
-	// The index of the last piece that contains data for this file.
-	pieceEndIndex int
-
-	// The byte offset within the first piece where the file's data starts.
-	startOffsetInFirstPiece int
-
-	// The byte offset within the last piece where the file's data ends.
-	endOffsetInLastPiece int
-}
-
 type torrentInfo struct {
-	files  []file
-	length int
-	pieces []piece
+	files       []file
+	length      int
+	pieceLength int
+	pieces      []piece
 }
 
 type torrentStatus int
@@ -546,16 +526,9 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 
 		case downloadedPiece := <-tr.downloadedPieceCh:
 			{
-				err := os.MkdirAll(tr.outputDir, 0755)
-
-				if err != nil {
-					// todo: handle error
-					panic(err)
-				}
-
 				for fileIndex := range downloadedPiece.piece.fileIndexes {
 					file := tr.info.files[fileIndex]
-					fptr, err := os.OpenFile(filepath.Join(tr.outputDir, file.name), os.O_CREATE|os.O_WRONLY, 0666)
+					fptr, err := file.openOrCreate(tr.outputDir)
 
 					//todo: handle error
 					if err != nil {
@@ -576,7 +549,7 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 					}
 
 					// todo: properly handle this error
-					if _, err := fptr.WriteAt(downloadedPiece.data[startOffset:endOffset], int64(startOffset)); err != nil {
+					if _, err := fptr.WriteAt(downloadedPiece.data[startOffset:endOffset], int64(tr.info.pieceLength*downloadedPiece.piece.index)); err != nil {
 						log.Println(err)
 					}
 
@@ -611,8 +584,7 @@ func (tr *Torrent) ID() string {
 // Initializes and manages the lifecycle of the torrent download process.
 //
 // It sets up various goroutines to handle peer connections, metadata downloading,
-// piece downloading, and writing. The function listens for system signals to
-// gracefully shut down all active processes and connections. It also ensures
+// piece downloading, and writing. It also ensures
 // that the torrent's metadata is downloaded before starting the piece download
 // process. The function uses context objects to manage the cancellation of
 // goroutines and ensures proper cleanup of resources upon shutdown.
