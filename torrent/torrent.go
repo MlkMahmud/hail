@@ -532,24 +532,40 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 
 					//todo: handle error
 					if err != nil {
+						log.Print(err)
 						continue
 					}
 
-					startOffset := 0
-					endOffset := downloadedPiece.piece.length
+					fileOffset := int64(((downloadedPiece.piece.index - file.pieceStartIndex) * tr.info.pieceLength) - file.startOffsetInFirstPiece)
+
+					pieceStartOffset := 0
+					pieceEndOffset := downloadedPiece.piece.length
+
 					isFirstPiece := file.pieceStartIndex == downloadedPiece.piece.index
 					isFinalPiece := file.pieceEndIndex == downloadedPiece.piece.index
 
 					if isFirstPiece {
-						startOffset = file.startOffsetInFirstPiece
+						fileOffset = 0
+						pieceStartOffset = file.startOffsetInFirstPiece
 					}
 
 					if isFinalPiece {
-						endOffset = file.endOffsetInLastPiece
+						pieceEndOffset = file.endOffsetInLastPiece
 					}
 
-					// todo: properly handle this error
-					if _, err := fptr.WriteAt(downloadedPiece.data[startOffset:endOffset], int64(tr.info.pieceLength*downloadedPiece.piece.index)); err != nil {
+					writeLen := pieceEndOffset - pieceStartOffset
+
+					if fileOffset+int64(writeLen) > int64(file.length) {
+						writeLen = int(file.length) - int(fileOffset)
+					}
+
+					if writeLen <= 0 {
+						log.Printf("skipping write: calculated writeLen <= 0 for file %q (fileOffset=%d, pieceStartOffset=%d, pieceEndOffset=%d, file.length=%d, piece.index=%d)", file.name, fileOffset, pieceStartOffset, pieceEndOffset, file.length, downloadedPiece.piece.index)
+						continue
+					}
+
+					if _, err := fptr.WriteAt(downloadedPiece.data[pieceStartOffset:pieceStartOffset+writeLen], fileOffset); err != nil {
+						// todo: properly handle this error
 						log.Println(err)
 					}
 
