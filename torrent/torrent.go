@@ -526,7 +526,7 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 
 		case downloadedPiece := <-tr.downloadedPieceCh:
 			{
-				for fileIndex := range downloadedPiece.piece.fileIndexes {
+				for _, fileIndex := range downloadedPiece.piece.fileIndexes {
 					file := tr.info.files[fileIndex]
 					fptr, err := file.openOrCreate(tr.outputDir)
 

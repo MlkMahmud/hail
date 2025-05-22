@@ -70,7 +70,7 @@ func mapFilesToPieces(files []file, totalLength int, piecesHashes string, pieceL
 
 		// If the file fits entirely within a single piece
 		if fileOffset+file.length <= pieceLength {
-			file.endOffsetInLastPiece = file.length
+			file.endOffsetInLastPiece = file.startOffsetInFirstPiece + file.length
 			// If the file spans multiple pieces and does not end on the border of its last piece
 		} else if endOffset := (file.length + fileOffset) % pieceLength; endOffset != 0 {
 			file.endOffsetInLastPiece = endOffset
