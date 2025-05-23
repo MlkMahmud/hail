@@ -371,7 +371,7 @@ func (p *peerConnection) receiveMessage(id messageId) (*message, error) {
 	receivedMessageId := messageId(messageBuffer[0])
 
 	if receivedMessageId != id {
-		return nil, fmt.Errorf("expected received message Id to be %d, but got %d", id, receivedMessageId)
+		 return nil, fmt.Errorf("received incorrect message type from peer: got \"%s\", expected \"%s\"", receivedMessageId, id)
 	}
 
 	return &message{id: receivedMessageId, payload: messageBuffer[1:]}, nil

@@ -32,3 +32,30 @@ const (
 	cancelMessageId
 	extensionMessageId = 20
 )
+
+func (m messageId) String() string {
+	switch m {
+	case choke:
+		return "choke"
+	case unchokeMessageId:
+		return "unchoke"
+	case interestedMessageId:
+		return "interested"
+	case notInterestedMessageId:
+		return "not interested"
+	case haveMessageId:
+		return "have"
+	case bitfieldMessageId:
+		return "bitfield"
+	case requestMessageId:
+		return "request"
+	case pieceMessageId:
+		return "piece"
+	case cancelMessageId:
+		return "cancel"
+	case extensionMessageId:
+		return "extension"
+	default:
+		return ""
+	}
+}
