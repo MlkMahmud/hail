@@ -32,10 +32,14 @@ type peerConnection struct {
 	remotePeerId       [20]byte
 	supportsExtensions bool
 	unchoked           bool
+
+	reader *messageReader
+	writer *messageWriter
 }
 
 type peerConnectionInitConfig struct {
 	bitfieldSize int
+	dialTimeout  time.Duration
 }
 
 type peerConnectionOpts struct {
@@ -371,7 +375,7 @@ func (p *peerConnection) receiveMessage(id messageId) (*message, error) {
 	receivedMessageId := messageId(messageBuffer[0])
 
 	if receivedMessageId != id {
-		 return nil, fmt.Errorf("received incorrect message type from peer: got \"%s\", expected \"%s\"", receivedMessageId, id)
+		return nil, fmt.Errorf("received incorrect message type from peer: got \"%s\", expected \"%s\"", receivedMessageId, id)
 	}
 
 	return &message{id: receivedMessageId, payload: messageBuffer[1:]}, nil
@@ -600,6 +604,10 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 	}, nil
 }
 
+func (p *peerConnection) handleIncomingMessage(msg message) error {
+	return nil
+}
+
 func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 	if p.conn != nil {
 		return nil
@@ -626,6 +634,69 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 	if err := p.completeExtensionHandshake(); err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func (pc *peerConnection) init(dialTimeout time.Duration) error {
+	if pc.conn == nil {
+		conn, err := net.DialTimeout("tcp", pc.remotePeerAddress, dialTimeout)
+
+		if err != nil {
+			return fmt.Errorf("failed to initialized peer connection: %w", err)
+		}
+
+		pc.conn = conn
+	}
+
+	return nil
+}
+
+func (pc *peerConnection) run(dialTimeout time.Duration, bitFieldSize int) error {
+	if err := pc.init(dialTimeout); err != nil {
+		return err
+	}
+
+	messageBufferSize := 10
+	pc.bitfield = make([]bool, bitFieldSize)
+
+	pc.reader = newMessageReader(messageReaderOpts{
+		conn:              pc.conn,
+		messageBufferSize: messageBufferSize,
+	})
+
+	pc.writer = newMessageWriter(messageWriterOpts{
+		conn:              pc.conn,
+		messageBufferSize: messageBufferSize,
+	})
+
+	if err := pc.completeBaseHandshake(); err != nil {
+		return err
+	}
+
+	// if it supports extensions send an extension request and wait until extension response is sent.
+	go pc.reader.run()
+	go pc.writer.run()
+
+	go func() {
+		for {
+			select {
+			case msg := <-pc.reader.messages:
+				if err := pc.handleIncomingMessage(msg); err != nil {
+					log.Println(err)
+					return
+				}
+
+			case readerErr := <-pc.reader.errCh:
+				log.Println(readerErr)
+				return
+
+			case writerErr := <-pc.writer.errCh:
+				log.Println(writerErr)
+				return
+			}
+		}
+	}()
 
 	return nil
 }
