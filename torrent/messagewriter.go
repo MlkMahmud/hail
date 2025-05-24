@@ -1,7 +1,9 @@
 package torrent
 
 import (
+	"bytes"
 	"encoding/binary"
+	"io"
 	"net"
 
 	"github.com/MlkMahmud/hail/utils"
@@ -24,6 +26,14 @@ func newMessageWriter(opts messageWriterOpts) *messageWriter {
 		errCh:    make(chan error, 1),
 		messages: make(chan message, opts.messageBufferSize),
 	}
+}
+
+func (mw *messageWriter) writeBuffer(buffer []byte) error {
+	if _, err := io.Copy(mw.conn, bytes.NewBuffer(buffer)); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (mw *messageWriter) writeMessage(m message) error {

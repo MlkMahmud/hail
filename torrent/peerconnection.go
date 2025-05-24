@@ -101,58 +101,13 @@ func generateBlockRequestPayload(block block) []byte {
 }
 
 func (p *peerConnection) completeBaseHandshake() error {
-	messageBuffer := make([]byte, handshakeMessageLen)
-	messageBuffer[0] = byte(pstrLen)
-
-	index := 1
-	index += copy(messageBuffer[index:], []byte(pstr))
-	index += copy(messageBuffer[index:], make([]byte, 5))
-
-	messageBuffer[index] = byte(16)
-	index += 1
-
-	index += copy(messageBuffer[index:], make([]byte, 2))
-	index += copy(messageBuffer[index:], p.infoHash[:])
-	index += copy(messageBuffer[index:], p.peerId[:])
-
-	if _, err := utils.ConnWriteFull(p.conn, messageBuffer, 0); err != nil {
-		return fmt.Errorf("failed to send base handshake message: %w", err)
+	if err := p.sendBaseHandshake(); err != nil {
+		return err
 	}
 
-	responseBuffer := make([]byte, handshakeMessageLen)
-
-	if _, err := utils.ConnReadFull(p.conn, responseBuffer, 0); err != nil {
-		return fmt.Errorf("failed to receive base handshake response: %w", err)
+	if err := p.receiveBaseHandshake(); err != nil {
+		return err
 	}
-
-	responseLength := len(responseBuffer)
-
-	if responseLength != handshakeMessageLen {
-		return fmt.Errorf("expected handshake response message length to be '%d' long, but got '%d'", handshakeMessageLen, responseLength)
-	}
-
-	if receivedPstrLen := responseBuffer[0]; receivedPstrLen != byte(pstrLen) {
-		return fmt.Errorf("expected handshake protocol string length to be '%d', but got '%v'", pstrLen, receivedPstrLen)
-	}
-
-	if receivedPstr := responseBuffer[1 : pstrLen+1]; string(receivedPstr) != pstr {
-		return fmt.Errorf("expected protocol string to equal '%s', but got '%s'", pstr, receivedPstr)
-	}
-
-	if receivedInfoHash := responseBuffer[28:48]; !bytes.Equal(receivedInfoHash, p.infoHash[:]) {
-		return fmt.Errorf("received info hash %v does not match expected info hash %v", receivedInfoHash, p.infoHash)
-	}
-
-	//The bit selected for the extension protocol is bit 20th from the right (counting starts at 0). So (reserved_byte[5] & 0x10) is the expression to use for checking if the client supports extended messaging.
-	if reservedByteIndex := 25; bytes.Equal(responseBuffer[reservedByteIndex:reservedByteIndex+1], []byte{byte(0x10)}) {
-		p.supportsExtensions = true
-	}
-
-	peerIdStartIndex := 48
-	remotePeerId := [20]byte{}
-	copy(remotePeerId[:], responseBuffer[peerIdStartIndex:])
-
-	p.remotePeerId = remotePeerId
 
 	return nil
 }
@@ -306,6 +261,40 @@ func (p *peerConnection) parseBitFieldMessage() error {
 	return nil
 }
 
+func (p *peerConnection) receiveBaseHandshake() error {
+	responseBuffer := make([]byte, handshakeMessageLen)
+
+	// Use the reader's read method to read the exact number of bytes
+	if err := p.reader.readBuffer(responseBuffer); err != nil {
+		return fmt.Errorf("failed to receive base handshake response: %w", err)
+	}
+
+	// Validate the protocol string length
+	if responseBuffer[0] != byte(pstrLen) {
+		return fmt.Errorf("expected protocol string length to be %d, but got %d", pstrLen, responseBuffer[0])
+	}
+
+	// Validate the protocol string
+	if string(responseBuffer[1:pstrLen+1]) != pstr {
+		return fmt.Errorf("expected protocol string to be '%s', but got '%s'", pstr, string(responseBuffer[1:pstrLen+1]))
+	}
+
+	// Validate the info hash
+	if !bytes.Equal(responseBuffer[28:48], p.infoHash[:]) {
+		return fmt.Errorf("received info hash does not match expected info hash")
+	}
+
+	// Extract the peer ID
+	copy(p.remotePeerId[:], responseBuffer[48:])
+
+	// Check for extension support
+	if responseBuffer[25]&0x10 != 0 {
+		p.supportsExtensions = true
+	}
+
+	return nil
+}
+
 func (p *peerConnection) receiveExtensionHandshakeMessage() error {
 	message, err := p.receiveMessage(extensionMessageId)
 
@@ -436,6 +425,37 @@ func (p *peerConnection) receiveMetadataMessage() ([]byte, error) {
 	}
 
 	return metadataPiece, nil
+}
+
+func (p *peerConnection) sendBaseHandshake() error {
+	messageBuffer := make([]byte, handshakeMessageLen)
+
+	// Write the protocol string length
+	messageBuffer[0] = byte(pstrLen)
+
+	// Write the protocol string
+	index := 1
+	index += copy(messageBuffer[index:], []byte(pstr))
+
+	// Write the reserved bytes (set to 0, except for extension support)
+	index += copy(messageBuffer[index:], make([]byte, 5))
+	messageBuffer[index] = byte(0x10) // Indicate support for extensions
+	index += 1
+
+	index += copy(messageBuffer[index:], make([]byte, 2))
+
+	// Write the info hash
+	index += copy(messageBuffer[index:], p.infoHash[:])
+
+	// Write the peer ID
+	index += copy(messageBuffer[index:], p.peerId[:])
+
+	// Use the writer to send the handshake message
+	if err := p.writer.writeBuffer(messageBuffer); err != nil {
+		return fmt.Errorf("failed to send base handshake message: %w", err)
+	}
+
+	return nil
 }
 
 func (p *peerConnection) sendInterestAndAwaitUnchokeMessage() error {

@@ -31,7 +31,7 @@ func newMessageReader(opts messageReaderOpts) *messageReader {
 	}
 }
 
-func (mr *messageReader) read(buffer []byte) error {
+func (mr *messageReader) readBuffer(buffer []byte) error {
 	_, err := io.ReadFull(mr.conn, buffer)
 
 	if errors.Is(err, io.EOF) {
@@ -48,7 +48,7 @@ func (mr *messageReader) read(buffer []byte) error {
 func (mr *messageReader) readMessage() (message, error) {
 	messageLengthBuffer := make([]byte, 4)
 
-	if err := mr.read(messageLengthBuffer); err != nil {
+	if err := mr.readBuffer(messageLengthBuffer); err != nil {
 		return message{}, err
 	}
 
@@ -60,7 +60,7 @@ func (mr *messageReader) readMessage() (message, error) {
 
 	messageBuffer := make([]byte, messageLength)
 
-	if err := mr.read(messageBuffer); err != nil {
+	if err := mr.readBuffer(messageBuffer); err != nil {
 		return message{}, err
 	}
 
