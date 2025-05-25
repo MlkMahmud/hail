@@ -10,6 +10,11 @@ type message struct {
 
 type messageId int
 
+type messageRequest struct {
+	errorCh    chan error
+	responseCh chan message
+}
+
 const (
 	metadataExt extension = "ut_metadata"
 )

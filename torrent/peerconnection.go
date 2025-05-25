@@ -33,8 +33,10 @@ type peerConnection struct {
 	supportsExtensions bool
 	unchoked           bool
 
-	reader *messageReader
-	writer *messageWriter
+	pendingRequests   map[string]*messageRequest
+	pendingRequestsMu sync.Mutex
+	reader            *messageReader
+	writer            *messageWriter
 }
 
 type peerConnectionInitConfig struct {
@@ -100,28 +102,12 @@ func generateBlockRequestPayload(block block) []byte {
 	return messageBuffer
 }
 
-func (p *peerConnection) completeBaseHandshake() error {
-	if err := p.sendBaseHandshake(); err != nil {
+func (p *peerConnection) initiateHandshake() error {
+	if err := p.sendHandshakeRequest(); err != nil {
 		return err
 	}
 
-	if err := p.receiveBaseHandshake(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (p *peerConnection) completeExtensionHandshake() error {
-	if !p.supportsExtensions {
-		return nil
-	}
-
-	if err := p.sendExtensionHandshakeMessage(); err != nil {
-		return err
-	}
-
-	if err := p.receiveExtensionHandshakeMessage(); err != nil {
+	if err := p.receiveHandshakeResponse(); err != nil {
 		return err
 	}
 
@@ -261,7 +247,7 @@ func (p *peerConnection) parseBitFieldMessage() error {
 	return nil
 }
 
-func (p *peerConnection) receiveBaseHandshake() error {
+func (p *peerConnection) receiveHandshakeResponse() error {
 	responseBuffer := make([]byte, handshakeMessageLen)
 
 	// Use the reader's read method to read the exact number of bytes
@@ -427,7 +413,11 @@ func (p *peerConnection) receiveMetadataMessage() ([]byte, error) {
 	return metadataPiece, nil
 }
 
-func (p *peerConnection) sendBaseHandshake() error {
+func (p *peerConnection) sendHandshakeRequest() error {
+	if p.writer == nil {
+		return fmt.Errorf("cannot send base handshake: writer is not initialized")
+	}
+
 	messageBuffer := make([]byte, handshakeMessageLen)
 
 	// Write the protocol string length
@@ -451,7 +441,7 @@ func (p *peerConnection) sendBaseHandshake() error {
 	index += copy(messageBuffer[index:], p.peerId[:])
 
 	// Use the writer to send the handshake message
-	if err := p.writer.writeBuffer(messageBuffer); err != nil {
+	if err := p.writer.writeBuffer(messageBuffer, time.Now().Add(time.Second*5)); err != nil {
 		return fmt.Errorf("failed to send base handshake message: %w", err)
 	}
 
@@ -476,6 +466,25 @@ func (p *peerConnection) sendInterestAndAwaitUnchokeMessage() error {
 	return nil
 }
 
+func (p *peerConnection) sendMessageRequest(key string, msg message) (*messageRequest, error) {
+	p.pendingRequestsMu.Lock()
+	defer p.pendingRequestsMu.Unlock()
+
+	if p.pendingRequests == nil {
+		return nil, fmt.Errorf("pending requests map is not initialized")
+	}
+
+	req := messageRequest{
+		errorCh:    make(chan error, 1),
+		responseCh: make(chan message, 1),
+	}
+
+	p.pendingRequests[key] = &req
+	p.writer.messages <- msg
+
+	return &req, nil
+}
+
 func (p *peerConnection) sendExtensionHandshakeMessage() error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"m": map[string]any{
@@ -497,8 +506,17 @@ func (p *peerConnection) sendExtensionHandshakeMessage() error {
 
 	copy(messagePayloadBuffer[index:], []byte(bencodedString))
 
-	if err := p.sendMessage(extensionMessageId, messagePayloadBuffer); err != nil {
-		return fmt.Errorf("failed to send extension handshake message: %w", err)
+	msg := message{id: extensionMessageId, payload: messagePayloadBuffer}
+	requestKey := "ext-handshake-request"
+
+	msqReq, err := p.sendMessageRequest(requestKey, msg)
+
+	if err != nil {
+		return err
+	}
+
+	if reqErr := <-msqReq.errorCh; reqErr != nil {
+		return reqErr
 	}
 
 	return nil
@@ -633,7 +651,7 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 		return nil
 	}
 
-	conn, err := net.DialTimeout("tcp", p.remotePeerAddress, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", p.remotePeerAddress, config.dialTimeout)
 
 	if err != nil {
 		return fmt.Errorf("failed to initialized peer connection: %w", err)
@@ -641,82 +659,48 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 
 	p.conn = conn
 	p.bitfield = make([]bool, config.bitfieldSize)
-
-	if err := p.completeBaseHandshake(); err != nil {
-		return err
-	}
-
-	if err := p.parseBitFieldMessage(); err != nil {
-		log.Printf("failed to receive 'Bitfield' message from peer: %v", err)
-		return nil
-	}
-
-	if err := p.completeExtensionHandshake(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (pc *peerConnection) init(dialTimeout time.Duration) error {
-	if pc.conn == nil {
-		conn, err := net.DialTimeout("tcp", pc.remotePeerAddress, dialTimeout)
-
-		if err != nil {
-			return fmt.Errorf("failed to initialized peer connection: %w", err)
-		}
-
-		pc.conn = conn
-	}
-
-	return nil
-}
-
-func (pc *peerConnection) run(dialTimeout time.Duration, bitFieldSize int) error {
-	if err := pc.init(dialTimeout); err != nil {
-		return err
-	}
-
 	messageBufferSize := 10
-	pc.bitfield = make([]bool, bitFieldSize)
 
-	pc.reader = newMessageReader(messageReaderOpts{
-		conn:              pc.conn,
+	p.reader = newMessageReader(messageReaderOpts{
+		conn:              p.conn,
 		messageBufferSize: messageBufferSize,
 	})
 
-	pc.writer = newMessageWriter(messageWriterOpts{
-		conn:              pc.conn,
+	p.writer = newMessageWriter(messageWriterOpts{
+		conn:              p.conn,
 		messageBufferSize: messageBufferSize,
 	})
 
-	if err := pc.completeBaseHandshake(); err != nil {
+	if err := p.initiateHandshake(); err != nil {
 		return err
 	}
 
-	// if it supports extensions send an extension request and wait until extension response is sent.
-	go pc.reader.run()
-	go pc.writer.run()
+	go p.reader.run()
+	go p.writer.run()
 
 	go func() {
 		for {
 			select {
-			case msg := <-pc.reader.messages:
-				if err := pc.handleIncomingMessage(msg); err != nil {
+			case msg := <-p.reader.messages:
+				if err := p.handleIncomingMessage(msg); err != nil {
 					log.Println(err)
 					return
 				}
 
-			case readerErr := <-pc.reader.errCh:
+			case readerErr := <-p.reader.errCh:
 				log.Println(readerErr)
 				return
 
-			case writerErr := <-pc.writer.errCh:
+			case writerErr := <-p.writer.errCh:
 				log.Println(writerErr)
 				return
 			}
 		}
 	}()
+
+	if err := p.sendExtensionHandshakeMessage(); err != nil {
+		return err
+	}
 
 	return nil
 }

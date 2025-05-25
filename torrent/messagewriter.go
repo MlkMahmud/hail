@@ -1,12 +1,9 @@
 package torrent
 
 import (
-	"bytes"
 	"encoding/binary"
-	"io"
 	"net"
-
-	"github.com/MlkMahmud/hail/utils"
+	"time"
 )
 
 type messageWriter struct {
@@ -28,15 +25,21 @@ func newMessageWriter(opts messageWriterOpts) *messageWriter {
 	}
 }
 
-func (mw *messageWriter) writeBuffer(buffer []byte) error {
-	if _, err := io.Copy(mw.conn, bytes.NewBuffer(buffer)); err != nil {
+func (mw *messageWriter) writeBuffer(buffer []byte, deadline time.Time) error {
+	if !deadline.IsZero() {
+		if err := mw.conn.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
+	}
+
+	if _, err := mw.conn.Write(buffer); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (mw *messageWriter) writeMessage(m message) error {
+func (mw *messageWriter) writeMessage(m message, deadline time.Time) error {
 	messageIdLen := 1
 	messagePrefixLen := 4
 	payloadLen := 0
@@ -53,7 +56,7 @@ func (mw *messageWriter) writeMessage(m message) error {
 	messageBuffer[index] = byte(m.id)
 	copy(messageBuffer[index+1:], m.payload)
 
-	if _, err := utils.ConnWriteFull(mw.conn, messageBuffer, 0); err != nil {
+	if err := mw.writeBuffer(messageBuffer, deadline); err != nil {
 		return err
 	}
 
@@ -68,7 +71,8 @@ func (mw *messageWriter) run() {
 			return
 		}
 
-		err := mw.writeMessage(message)
+		// todo: make deadlines configurable
+		err := mw.writeMessage(message, time.Now().Add(5 * time.Second))
 
 		if err != nil {
 			mw.errCh <- err
