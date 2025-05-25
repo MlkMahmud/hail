@@ -643,6 +643,15 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 }
 
 func (p *peerConnection) handleIncomingMessage(msg message) error {
+	switch msg.id {
+	case extensionMessageId:
+		// handleExtensionMessage
+	case choke:
+		p.unchoked = false
+
+	case unchokeMessageId:
+		p.unchoked = true
+	}
 	return nil
 }
 
