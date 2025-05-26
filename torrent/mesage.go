@@ -1,29 +1,11 @@
 package torrent
 
-type extension string
-
-type extensionMessage int
 type message struct {
 	id      messageId
 	payload []byte
 }
 
 type messageId int
-
-type messageRequest struct {
-	errorCh    chan error
-	responseCh chan message
-}
-
-const (
-	metadataExt extension = "ut_metadata"
-)
-
-const (
-	extensionRequestMessageId extensionMessage = iota
-	extensionDataMessageId
-	extensionRejectMessageId
-)
 
 const (
 	choke messageId = iota
@@ -36,6 +18,7 @@ const (
 	pieceMessageId
 	cancelMessageId
 	extensionMessageId = 20
+	keepAliveMessageId = -1
 )
 
 func (m messageId) String() string {
@@ -60,7 +43,14 @@ func (m messageId) String() string {
 		return "cancel"
 	case extensionMessageId:
 		return "extension"
+	case keepAliveMessageId:
+		return "keep alive"
 	default:
 		return ""
 	}
+}
+
+type messageRequest struct {
+	errorCh    chan error
+	responseCh chan []byte
 }

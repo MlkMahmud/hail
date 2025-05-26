@@ -3,6 +3,7 @@ package torrent
 import (
 	"bytes"
 	"crypto/sha1"
+	"encoding/binary"
 	"fmt"
 )
 
@@ -28,6 +29,28 @@ type piece struct {
 const (
 	blockSize = 16384
 )
+
+func generateBlockRequestPayload(block block) []byte {
+	blockBeginSize := 4
+	blockIndexSize := 4
+	blockLengthSize := 4
+	messageBufferSize := blockBeginSize + blockIndexSize + blockLengthSize
+
+	messageBuffer := make([]byte, messageBufferSize)
+
+	index := 0
+
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.pieceIndex))
+	index += blockIndexSize
+
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.begin))
+	index += blockBeginSize
+
+	binary.BigEndian.PutUint32(messageBuffer[index:], uint32(block.length))
+	index += blockLengthSize
+
+	return messageBuffer
+}
 
 func (p *piece) assembleBlocks(blocks []block) []byte {
 	buffer := make([]byte, p.length)

@@ -54,6 +54,10 @@ func (mr *messageReader) readMessage() (message, error) {
 
 	messageLength := binary.BigEndian.Uint32(messageLengthBuffer)
 
+	if messageLength == 0 {
+		return message{id: keepAliveMessageId, payload: nil}, nil
+	}
+
 	if messageLength > maxMessageLength {
 		return message{}, fmt.Errorf("message length %d exceeds maximum allowed length %d", messageLength, maxMessageLength)
 	}
@@ -78,6 +82,10 @@ func (mr *messageReader) run() {
 			mr.errCh <- err
 			close(mr.errCh)
 			return
+		}
+
+		if message.id == keepAliveMessageId {
+			continue
 		}
 
 		mr.messages <- message

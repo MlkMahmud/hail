@@ -393,7 +393,7 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 
 				defer pc.close()
 
-				if !pc.supportsExtension(metadataExt) {
+				if !pc.supportsExtension(utMetadata) {
 					log.Printf("peer connection \"%s\" does not support the metadata extension\n", pc.remotePeerAddress)
 					break
 				}
