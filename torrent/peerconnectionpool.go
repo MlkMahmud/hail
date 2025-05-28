@@ -13,18 +13,18 @@ import (
 
 type peerConnectionPool struct {
 	activeConnectionIds utils.Set
-	connections         map[string]peerConnection
+	connections         map[string]*peerConnection
 	mutex               sync.Mutex
 }
 
 func newPeerConnectionPool() *peerConnectionPool {
 	return &peerConnectionPool{
 		activeConnectionIds: *utils.NewSet(),
-		connections:         make(map[string]peerConnection),
+		connections:         make(map[string]*peerConnection),
 	}
 }
 
-func (p *peerConnectionPool) addConnection(pc peerConnection) {
+func (p *peerConnectionPool) addConnection(pc *peerConnection) {
 	p.mutex.Lock()
 	p.connections[pc.remotePeerAddress] = pc
 	p.mutex.Unlock()
@@ -36,7 +36,7 @@ func (p *peerConnectionPool) closeConnections() {
 	}
 }
 
-func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (peerConnection, error) {
+func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (*peerConnection, error) {
 	for {
 		p.mutex.Lock()
 
@@ -52,7 +52,7 @@ func (p *peerConnectionPool) getIdleConnection(ctx context.Context) (peerConnect
 
 		select {
 		case <-ctx.Done():
-			return peerConnection{}, fmt.Errorf("failed to find idle peer connection: %w", ctx.Err())
+			return nil, fmt.Errorf("failed to find idle peer connection: %w", ctx.Err())
 		default:
 			// todo: add trigger to find more peers
 			time.Sleep(2 * time.Second)

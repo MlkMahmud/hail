@@ -76,6 +76,7 @@ func newPeerConnection(opts peerConnectionOpts) *peerConnection {
 		infoHash:          opts.infoHash,
 		remotePeerAddress: fmt.Sprintf("%s:%d", opts.remotePeer.ipAddress, opts.remotePeer.port),
 		peerId:            opts.peerId,
+		pendingRequests: map[string]*messageRequest{},
 	}
 }
 
@@ -161,26 +162,24 @@ func (p *peerConnection) downloadBlock(requestedBlock block, resultsQueue chan<-
 
 // todo: move to Torrent struct?
 func (p *peerConnection) downloadMetadata() ([]byte, error) {
+	if p.metadataSize == 0 {
+		return nil, fmt.Errorf("metadata size is not set; cannot download metadata")
+	}
+
 	buffer := []byte{}
-	hasDownloadedAllPieces := false
+	downloaded := 0
 	index := 0
 
-	for !hasDownloadedAllPieces {
-		metadataPiece, err := p.sendMetadataRequestMessage(index)
+	for downloaded < p.metadataSize {
+		metadataPiece, err := p.sendMetadataMessageRequest(index)
 
 		if err != nil {
 			return nil, err
 		}
 
 		buffer = append(buffer, metadataPiece...)
+		downloaded += len(metadataPiece)
 		index += 1
-
-		//  If it is not the last piece of the metadata, it MUST be 16kiB (blockSize).
-		// todo: get metadata size from extension handshake request.
-		if len(metadataPiece) != blockSize {
-			hasDownloadedAllPieces = true
-			break
-		}
 	}
 
 	return buffer, nil
@@ -421,11 +420,14 @@ func (p *peerConnection) handleIncomingMessage(msg message) error {
 	var err error
 
 	switch msg.id {
-	case extensionMessageId:
-		err = p.handleExtensionMessage(msg)
+	case bitfieldMessageId:
+		err = p.parseBitFieldMessage(msg)
 
 	case choke:
 		p.unChoked = false
+
+	case extensionMessageId:
+		err = p.handleExtensionMessage(msg)
 
 	case unchokeMessageId:
 		p.unChoked = true
@@ -504,11 +506,9 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 	return nil
 }
 
-func (p *peerConnection) parseBitFieldMessage() error {
-	message, err := p.receiveMessage(bitfieldMessageId)
-
-	if err != nil {
-		return fmt.Errorf("failed to receive 'Bitfield' message from peer: %w", err)
+func (p *peerConnection) parseBitFieldMessage(msg message) error {
+	if msg.id != bitfieldMessageId {
+		return fmt.Errorf("expected message id to be '%s', but got '%s'", bitfieldMessageId, msg.id)
 	}
 
 	numOfPieces := len(p.bitfield)
@@ -518,7 +518,7 @@ func (p *peerConnection) parseBitFieldMessage() error {
 		return nil
 	}
 
-	if receivedBitfieldLength := len(message.payload); receivedBitfieldLength != expectedBitFieldLength {
+	if receivedBitfieldLength := len(msg.payload); receivedBitfieldLength != expectedBitFieldLength {
 		return fmt.Errorf("expected 'Bitfield' payload to contain '%d' bytes, but got '%d'", expectedBitFieldLength, receivedBitfieldLength)
 	}
 
@@ -529,7 +529,7 @@ func (p *peerConnection) parseBitFieldMessage() error {
 		placeValue := 7 - byteIndex
 		mask := int(math.Pow(float64(2), float64(placeValue)))
 
-		isBitSet := (message.payload[byteArrayIndex] & byte(mask)) != 0
+		isBitSet := (msg.payload[byteArrayIndex] & byte(mask)) != 0
 		p.bitfield[index] = isBitSet
 	}
 
@@ -653,7 +653,7 @@ func (p *peerConnection) sendInterestAndAwaitUnchokeMessage() error {
 func (p *peerConnection) sendExtensionHandshakeMessage() error {
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"m": map[string]any{
-			string(utMetadata): utMetadataId,
+			string(utMetadata): int(utMetadataId),
 		},
 	})
 
@@ -730,7 +730,10 @@ func (p *peerConnection) sendMessageRequest(key string, msg message) (*messageRe
 	return &req, nil
 }
 
-func (p *peerConnection) sendMetadataRequestMessage(pieceIndex int) ([]byte, error) {
+func (p *peerConnection) sendMetadataMessageRequest(pieceIndex int) ([]byte, error) {
+	key := fmt.Sprintf("metadata-piece-request-%d", pieceIndex)
+	defer p.deleteRequest(key)
+
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"msg_type": int(extMsgRequest),
 		"piece":    pieceIndex,
@@ -749,7 +752,6 @@ func (p *peerConnection) sendMetadataRequestMessage(pieceIndex int) ([]byte, err
 	index += 1
 	copy(messagePayloadBuffer[index:], []byte(bencodedString))
 
-	key := fmt.Sprintf("metadata-piece-request-%d", pieceIndex)
 	req, err := p.sendMessageRequest(key, message{id: extensionMessageId, payload: messagePayloadBuffer})
 
 	if err != nil {

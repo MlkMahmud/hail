@@ -73,7 +73,7 @@ type Torrent struct {
 	peerId                      [20]byte
 	metadataDownloadCompleted   bool
 	metadataDownloadCompletedMu sync.Mutex
-	metadataPeersCh             chan peerConnection
+	metadataPeersCh             chan *peerConnection
 	peerConnectionPool          *peerConnectionPool
 	outputDir                   string
 	status                      torrentStatus
@@ -208,13 +208,13 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 					tr.peers[peer.String()] = peer
 
 					if tr.peerConnectionPool.size() < tr.maxPeerConnections {
-						tr.peerConnectionPool.addConnection(*pc)
+						tr.peerConnectionPool.addConnection(pc)
 					}
 
 					select {
 					case <-tr.metadataDownloadCompletedCh:
 						continue
-					case tr.metadataPeersCh <- *pc:
+					case tr.metadataPeersCh <- pc:
 					}
 				}
 			}
@@ -467,7 +467,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 					}
 				}
 
-				go func(pc peerConnection, tr *Torrent) {
+				go func(pc *peerConnection, tr *Torrent) {
 					defer sem.Release()
 
 					for {
