@@ -1,6 +1,7 @@
 package torrent
 
 import (
+	"context"
 	"encoding/binary"
 	"net"
 	"time"
@@ -63,21 +64,25 @@ func (mw *messageWriter) writeMessage(m message, deadline time.Time) error {
 	return nil
 }
 
-func (mw *messageWriter) run() {
+func (mw *messageWriter) run(ctx context.Context) {
 	for {
-		message, ok := <-mw.messages
-
-		if !ok {
+		select {
+		case <-ctx.Done():
 			return
-		}
 
-		// todo: make deadlines configurable
-		err := mw.writeMessage(message, time.Now().Add(5 * time.Second))
+		case message, ok := <-mw.messages:
+			if !ok {
+				return
+			}
 
-		if err != nil {
-			mw.errCh <- err
-			close(mw.errCh)
-			return
+			// todo: make deadlines configurable
+			err := mw.writeMessage(message, time.Now().Add(5*time.Second))
+
+			if err != nil {
+				mw.errCh <- err
+				close(mw.errCh)
+				return
+			}
 		}
 	}
 }

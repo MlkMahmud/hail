@@ -20,9 +20,9 @@ var (
 )
 
 type RetryOptions[T any] struct {
-	Delay      time.Duration
+	Delay       time.Duration
 	MaxAttempts int
-	Operation  func() (T, error)
+	Operation   func() (T, error)
 }
 
 func FileExists(filepath string) bool {

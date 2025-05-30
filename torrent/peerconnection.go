@@ -2,6 +2,7 @@ package torrent
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"github.com/MlkMahmud/hail/bencode"
-	"github.com/MlkMahmud/hail/utils"
 )
 
 type blockRequestResult struct {
@@ -22,22 +22,22 @@ type blockRequestResult struct {
 
 type peerConnection struct {
 	bitfield           []bool
+	closeCh            chan struct{}
 	conn               net.Conn
 	failedAttempts     int
 	hashFails          int
 	infoHash           [sha1.Size]byte
 	metadataSize       int
-	peerId             [20]byte
 	peerExtensions     map[extensionName]uint8
+	peerId             [20]byte
+	pendingRequests    map[string]*messageRequest
+	pendingRequestsMu  sync.Mutex
 	remotePeerAddress  string
 	remotePeerId       [20]byte
+	reader             *messageReader
 	supportsExtensions bool
 	unChoked           bool
-
-	pendingRequests   map[string]*messageRequest
-	pendingRequestsMu sync.Mutex
-	reader            *messageReader
-	writer            *messageWriter
+	writer             *messageWriter
 }
 
 type peerConnectionInitConfig struct {
@@ -76,20 +76,23 @@ func newPeerConnection(opts peerConnectionOpts) *peerConnection {
 		infoHash:          opts.infoHash,
 		remotePeerAddress: fmt.Sprintf("%s:%d", opts.remotePeer.ipAddress, opts.remotePeer.port),
 		peerId:            opts.peerId,
-		pendingRequests: map[string]*messageRequest{},
+		pendingRequests:   map[string]*messageRequest{},
 	}
 }
 
-func (p *peerConnection) initiateHandshake() error {
-	if err := p.sendHandshakeRequest(); err != nil {
-		return err
+func (p *peerConnection) close() {
+	if p.conn != nil {
+		p.conn.Close()
+		p.conn = nil
 	}
 
-	if err := p.receiveHandshakeResponse(); err != nil {
-		return err
+	if p.closeCh != nil {
+		select {
+		case <-p.closeCh:
+		default:
+			close(p.closeCh)
+		}
 	}
-
-	return nil
 }
 
 func (p *peerConnection) deleteRequest(key string) {
@@ -107,59 +110,6 @@ func (p *peerConnection) deleteRequest(key string) {
 	return
 }
 
-func (p *peerConnection) downloadBlock(requestedBlock block, resultsQueue chan<- blockRequestResult, mutex *readWriteMutex) {
-	retries := 2
-
-	var downloadedBlock block
-	var mainError error
-
-	for range retries {
-		payload := generateBlockRequestPayload(requestedBlock)
-
-		mutex.writer.Lock()
-		err := p.sendMessage(requestMessageId, payload)
-		mutex.writer.Unlock()
-
-		if err != nil {
-			mainError = fmt.Errorf("failed to send 'Request' message to peer at address %s for block (pieceIndex: %d, begin: %d, length: %d): %w", p.remotePeerAddress, requestedBlock.pieceIndex, requestedBlock.begin, requestedBlock.length, err)
-			continue
-		}
-
-		mutex.reader.Lock()
-		message, err := p.receiveMessage(pieceMessageId)
-		mutex.reader.Unlock()
-
-		if err != nil {
-			mainError = fmt.Errorf("failed to receive 'Piece' message from peer: %w", err)
-			continue
-		}
-
-		index := 0
-
-		blockPieceIndex := binary.BigEndian.Uint32(message.payload[index:])
-		index += 4
-
-		blockPieceOffset := binary.BigEndian.Uint32(message.payload[index:])
-		index += 4
-
-		blockData := message.payload[index:]
-
-		downloadedBlock = block{
-			begin:      int(blockPieceOffset),
-			data:       blockData,
-			length:     len(blockData),
-			pieceIndex: int(blockPieceIndex),
-		}
-
-		break
-	}
-
-	resultsQueue <- blockRequestResult{
-		block: downloadedBlock,
-		err:   mainError,
-	}
-}
-
 // todo: move to Torrent struct?
 func (p *peerConnection) downloadMetadata() ([]byte, error) {
 	if p.metadataSize == 0 {
@@ -171,7 +121,7 @@ func (p *peerConnection) downloadMetadata() ([]byte, error) {
 	index := 0
 
 	for downloaded < p.metadataSize {
-		metadataPiece, err := p.sendMetadataMessageRequest(index)
+		metadataPiece, err := p.sendMetadataPieceRequest(index)
 
 		if err != nil {
 			return nil, err
@@ -185,23 +135,17 @@ func (p *peerConnection) downloadMetadata() ([]byte, error) {
 	return buffer, nil
 }
 
-func (p *peerConnection) close() {
-	if p.conn != nil {
-		p.conn.Close()
-	}
-}
-
 func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 	if p.conn == nil {
 		return nil, fmt.Errorf("peer connection has not been established")
 	}
 
 	if !p.hasPiece(piece.index) {
-		// todo: should this be treated as an error?
+		// todo: create custom error so caller can handle it differently
 		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.remotePeerAddress, piece.index)
 	}
 
-	if err := p.sendInterestAndAwaitUnchokeMessage(); err != nil {
+	if err := p.sendInterestedMessage(); err != nil {
 		return nil, fmt.Errorf("failed to download piece at index %d: %w", piece.index, err)
 	}
 
@@ -211,7 +155,6 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 
 	downloadedBlocks := make([]block, numOfBlocks)
 	maxBatchSize := 5
-	mutex := readWriteMutex{}
 	resultsQueue := make(chan blockRequestResult)
 
 	for numOfBlocksDownloaded < numOfBlocks {
@@ -220,7 +163,7 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 		currentBatchSize := min(numOfPendingBlocks, maxBatchSize)
 
 		for i := range currentBatchSize {
-			go p.downloadBlock(pendingBlocks[i], resultsQueue, &mutex)
+			go p.sendRequestMessage(pendingBlocks[i], resultsQueue)
 		}
 
 		for range currentBatchSize {
@@ -240,7 +183,6 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 			downloadedBlocks[downloadedBlockIndex] = downloadedBlock
 			numOfBlocksDownloaded += 1
 		}
-
 	}
 
 	return &downloadedPiece{
@@ -249,16 +191,41 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 	}, nil
 }
 
+func (p *peerConnection) handleBitfieldMessage(msg message) error {
+	if msg.id != bitfieldMessageId {
+		return fmt.Errorf("expected message id to be '%s', but got '%s'", bitfieldMessageId, msg.id)
+	}
+
+	numOfPieces := len(p.bitfield)
+	expectedBitFieldLength := int(math.Ceil(float64(numOfPieces) / byteSize))
+
+	if numOfPieces == 0 {
+		return nil
+	}
+
+	if receivedBitfieldLength := len(msg.payload); receivedBitfieldLength != expectedBitFieldLength {
+		return fmt.Errorf("expected 'Bitfield' payload to contain '%d' bytes, but got '%d'", expectedBitFieldLength, receivedBitfieldLength)
+	}
+
+	for index := range numOfPieces {
+		byteArrayIndex := index / byteSize
+		byteIndex := index % byteSize
+		// In an 8-bit number, the MSB (bit 7) has a place value of 2⁷,
+		placeValue := 7 - byteIndex
+		mask := int(math.Pow(float64(2), float64(placeValue)))
+
+		isBitSet := (msg.payload[byteArrayIndex] & byte(mask)) != 0
+		p.bitfield[index] = isBitSet
+	}
+
+	return nil
+}
+
 func (p *peerConnection) handleExtensionHandshakeMessage(payload []byte) error {
 	var err error
 
-	defer func() {
-		key := "ext-handshake-request"
-		if req, ok := p.pendingRequests[key]; ok {
-			req.errorCh <- err
-			p.deleteRequest(key)
-		}
-	}()
+	key := "ext-handshake-request"
+	defer p.respondToRequest(key, nil, err)
 
 	if len(payload) < 2 {
 		err = fmt.Errorf("extension handshake message payload too short: got %d bytes", len(payload))
@@ -340,22 +307,7 @@ func (p *peerConnection) handleMetadataExtensionMessage(payload []byte) error {
 	var key string
 	var response []byte
 
-	defer func() {
-		if key == "" {
-			return
-		}
-
-		if req, ok := p.pendingRequests[key]; ok {
-			if err != nil {
-				req.errorCh <- err
-				close(req.errorCh)
-			} else {
-				req.responseCh <- response
-				close(req.responseCh)
-			}
-			p.deleteRequest(key)
-		}
-	}()
+	defer p.respondToRequest(key, response, err)
 
 	if len(payload) == 0 {
 		err = fmt.Errorf("metadata response payload is empty")
@@ -421,7 +373,7 @@ func (p *peerConnection) handleIncomingMessage(msg message) error {
 
 	switch msg.id {
 	case bitfieldMessageId:
-		err = p.parseBitFieldMessage(msg)
+		err = p.handleBitfieldMessage(msg)
 
 	case choke:
 		p.unChoked = false
@@ -429,14 +381,61 @@ func (p *peerConnection) handleIncomingMessage(msg message) error {
 	case extensionMessageId:
 		err = p.handleExtensionMessage(msg)
 
+	case pieceMessageId:
+		err = p.handlePieceMessage(msg)
+
 	case unchokeMessageId:
-		p.unChoked = true
+		err = p.handleUnChokeMessage(msg)
 
 	default:
 		err = fmt.Errorf("received unknown message id: %v", msg.id)
 	}
 
 	return err
+}
+
+func (p *peerConnection) handlePieceMessage(msg message) error {
+	var err error
+
+	if msg.id != pieceMessageId {
+		return fmt.Errorf("expected message id to be '%s', but got '%s'", pieceMessageId, msg.id)
+	}
+
+	if len(msg.payload) < 9 {
+		err = fmt.Errorf("piece message payload too short: expected at least 9 bytes, got %d", len(msg.payload))
+		return err
+	}
+
+	index := 0
+
+	blockPieceIndex := binary.BigEndian.Uint32(msg.payload[index:])
+	index += 4
+
+	blockPieceOffset := binary.BigEndian.Uint32(msg.payload[index:])
+	index += 4
+
+	response := msg.payload[index:]
+	blockLength := len(response)
+
+	if blockLength > blockSize {
+		err = fmt.Errorf("received block size %d exceeds maximum allowed length %d", blockLength, blockSize)
+	}
+
+	key := fmt.Sprintf("piece-%d-offset-%d-length-%d", blockPieceIndex, blockPieceOffset, blockLength)
+	p.respondToRequest(key, response, err)
+
+	return err
+}
+
+func (p *peerConnection) handleUnChokeMessage(msg message) error {
+	if msg.id != unchokeMessageId {
+		return fmt.Errorf("expected message id to be '%s', but got '%s'", unchokeMessageId, msg.id)
+	}
+
+	p.unChoked = true
+	p.respondToRequest("interested", nil, nil)
+
+	return nil
 }
 
 func (p *peerConnection) hasPiece(pieceIndex int) bool {
@@ -455,11 +454,17 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 	conn, err := net.DialTimeout("tcp", p.remotePeerAddress, config.dialTimeout)
 
 	if err != nil {
-		return fmt.Errorf("failed to initialized peer connection: %w", err)
+		return fmt.Errorf("failed to initialize peer connection: %w", err)
+	}
+
+	if conn == nil {
+		return fmt.Errorf("unexpected nil connection returned by DialTimeout")
 	}
 
 	p.conn = conn
 	p.bitfield = make([]bool, config.bitfieldSize)
+	p.closeCh = make(chan struct{}, 1)
+
 	messageBufferSize := 10
 
 	p.reader = newMessageReader(messageReaderOpts{
@@ -473,64 +478,67 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 	})
 
 	if err := p.initiateHandshake(); err != nil {
+		p.close()
 		return err
 	}
 
-	go p.reader.run()
-	go p.writer.run()
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	go p.reader.run(ctx)
+	go p.writer.run(ctx)
+
+	shutDownFn := func(err error) {
+		if err != nil {
+			log.Println(err)
+		}
+
+		cancelFunc()
+		p.close()
+	}
 
 	go func() {
+		var err error
+		defer shutDownFn(err)
+
 		for {
 			select {
-			case msg := <-p.reader.messages:
-				if err := p.handleIncomingMessage(msg); err != nil {
-					log.Println(err)
+			case msg, ok := <-p.reader.messages:
+				if !ok {
+					err = fmt.Errorf("reader.messages channel closed unexpectedly")
 					return
 				}
 
-			case readerErr := <-p.reader.errCh:
-				log.Println(readerErr)
+				if err = p.handleIncomingMessage(msg); err != nil {
+					return
+				}
+
+			case err = <-p.reader.errCh:
 				return
 
-			case writerErr := <-p.writer.errCh:
-				log.Println(writerErr)
+			case err = <-p.writer.errCh:
+				return
+
+			case <-p.closeCh:
 				return
 			}
 		}
 	}()
 
-	if err := p.sendExtensionHandshakeMessage(); err != nil {
+	if err := p.sendExtensionHandshake(); err != nil {
+		shutDownFn(err)
 		return err
 	}
 
 	return nil
 }
 
-func (p *peerConnection) parseBitFieldMessage(msg message) error {
-	if msg.id != bitfieldMessageId {
-		return fmt.Errorf("expected message id to be '%s', but got '%s'", bitfieldMessageId, msg.id)
+func (p *peerConnection) initiateHandshake() error {
+	if err := p.sendHandshakeRequest(); err != nil {
+		return err
 	}
 
-	numOfPieces := len(p.bitfield)
-	expectedBitFieldLength := int(math.Ceil(float64(numOfPieces) / byteSize))
-
-	if numOfPieces == 0 {
-		return nil
-	}
-
-	if receivedBitfieldLength := len(msg.payload); receivedBitfieldLength != expectedBitFieldLength {
-		return fmt.Errorf("expected 'Bitfield' payload to contain '%d' bytes, but got '%d'", expectedBitFieldLength, receivedBitfieldLength)
-	}
-
-	for index := range numOfPieces {
-		byteArrayIndex := index / byteSize
-		byteIndex := index % byteSize
-		// In an 8-bit number, the MSB (bit 7) has a place value of 2⁷,
-		placeValue := 7 - byteIndex
-		mask := int(math.Pow(float64(2), float64(placeValue)))
-
-		isBitSet := (msg.payload[byteArrayIndex] & byte(mask)) != 0
-		p.bitfield[index] = isBitSet
+	if err := p.receiveHandshakeResponse(); err != nil {
+		return err
 	}
 
 	return nil
@@ -574,27 +582,17 @@ func (p *peerConnection) receiveHandshakeResponse() error {
 	return nil
 }
 
-func (p *peerConnection) receiveMessage(id messageId) (*message, error) {
-	messageLengthBuffer := make([]byte, 4)
+func (p *peerConnection) respondToRequest(key string, response []byte, err error) {
+	p.pendingRequestsMu.Lock()
+	defer p.pendingRequestsMu.Unlock()
 
-	if _, err := utils.ConnReadFull(p.conn, messageLengthBuffer, 0); err != nil {
-		return nil, err
+	if req, ok := p.pendingRequests[key]; ok {
+		if err != nil {
+			req.errorCh <- err
+		} else {
+			req.responseCh <- response
+		}
 	}
-
-	messageLength := binary.BigEndian.Uint32(messageLengthBuffer)
-	messageBuffer := make([]byte, messageLength)
-
-	if _, err := utils.ConnReadFull(p.conn, messageBuffer, 0); err != nil {
-		return nil, err
-	}
-
-	receivedMessageId := messageId(messageBuffer[0])
-
-	if receivedMessageId != id {
-		return nil, fmt.Errorf("received incorrect message type from peer: got \"%s\", expected \"%s\"", receivedMessageId, id)
-	}
-
-	return &message{id: receivedMessageId, payload: messageBuffer[1:]}, nil
 }
 
 func (p *peerConnection) sendHandshakeRequest() error {
@@ -631,26 +629,67 @@ func (p *peerConnection) sendHandshakeRequest() error {
 	return nil
 }
 
-func (p *peerConnection) sendInterestAndAwaitUnchokeMessage() error {
-	if p.unChoked {
-		return nil
+func (p *peerConnection) sendRequestMessage(blk block, resultsQueue chan blockRequestResult) {
+	retries := 2
+
+	var blockData []byte
+	var mainError error
+
+	key := fmt.Sprintf("piece-%d-offset-%d-length-%d", blk.pieceIndex, blk.begin, blk.length)
+	payload := generateBlockRequestPayload(blk)
+
+	defer p.deleteRequest(key)
+
+	for range retries {
+		req, err := p.sendMessage(key, message{id: requestMessageId, payload: payload})
+
+		if err != nil {
+			mainError = err
+			continue
+		}
+
+		select {
+		case err := <-req.errorCh:
+			mainError = fmt.Errorf("failed to send 'Request' message to peer at address %s for block (pieceIndex: %d, begin: %d, length: %d): %w", p.remotePeerAddress, blk.pieceIndex, blk.begin, blk.length, err)
+			continue
+
+		case <-time.After(5 * time.Second):
+			mainError = fmt.Errorf("timed out waiting for block response from peer at address %s for block (pieceIndex: %d, begin: %d, length: %d)", p.remotePeerAddress, blk.pieceIndex, blk.begin, blk.length)
+			continue
+
+		case data := <-req.responseCh:
+			if dataLength := len(data); dataLength != blk.length {
+				mainError = fmt.Errorf("received block data length (%d) does not match requested length (%d)", dataLength, blk.length)
+				continue
+			}
+
+			mainError = nil
+			blockData = data
+		}
+
+		break
 	}
 
-	if err := p.sendMessage(interestedMessageId, nil); err != nil {
-		return fmt.Errorf("failed to send 'Interested' message to peer: %w", err)
+	resultsQueue <- blockRequestResult{
+		block: block{
+			begin:      blk.begin,
+			data:       blockData,
+			length:     blk.length,
+			pieceIndex: blk.pieceIndex,
+		},
+		err: mainError,
 	}
-
-	if _, err := p.receiveMessage(unchokeMessageId); err != nil {
-		return fmt.Errorf("failed to receive 'Unchoke' message from peer: %w", err)
-	}
-
-	p.unChoked = true
-
-	return nil
 }
 
 // todo: add metadata size to request payload if you have it.
-func (p *peerConnection) sendExtensionHandshakeMessage() error {
+func (p *peerConnection) sendExtensionHandshake() error {
+	if !p.supportsExtensions {
+		return nil
+	}
+
+	requestKey := "ext-handshake-request"
+	defer p.deleteRequest(requestKey)
+
 	bencodedString, err := bencode.EncodeValue(map[string]any{
 		"m": map[string]any{
 			string(utMetadata): int(utMetadataId),
@@ -672,65 +711,83 @@ func (p *peerConnection) sendExtensionHandshakeMessage() error {
 	copy(messagePayloadBuffer[index:], []byte(bencodedString))
 
 	msg := message{id: extensionMessageId, payload: messagePayloadBuffer}
-	requestKey := "ext-handshake-request"
 
-	msqReq, err := p.sendMessageRequest(requestKey, msg)
+	req, err := p.sendMessage(requestKey, msg)
 
 	if err != nil {
 		return err
 	}
 
-	if reqErr := <-msqReq.errorCh; reqErr != nil {
-		return reqErr
-	}
-
-	return nil
-}
-
-func (p *peerConnection) sendMessage(messageId messageId, payload []byte) error {
-	messageIdLen := 1
-	messagePrefixLen := 4
-	payloadLen := 0
-
-	if payload != nil {
-		payloadLen = len(payload)
-	}
-
-	messageBufferLen := messagePrefixLen + messageIdLen + payloadLen
-	messageBuffer := make([]byte, messageBufferLen)
-	binary.BigEndian.PutUint32(messageBuffer, uint32(messageIdLen+payloadLen))
-
-	index := 4
-	messageBuffer[index] = byte(messageId)
-	copy(messageBuffer[index+1:], payload)
-
-	if _, err := utils.ConnWriteFull(p.conn, messageBuffer, 0); err != nil {
+	select {
+	case err := <-req.errorCh:
 		return err
+	case <-req.responseCh:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timed out waiting for extension handshake response from peer: %s", p.remotePeerAddress)
 	}
-
-	return nil
 }
 
-func (p *peerConnection) sendMessageRequest(key string, msg message) (*messageRequest, error) {
-	p.pendingRequestsMu.Lock()
-	defer p.pendingRequestsMu.Unlock()
+func (p *peerConnection) sendInterestedMessage() error {
+	if p.unChoked {
+		return nil
+	}
 
+	key := "interested"
+	defer p.deleteRequest(key)
+
+	req, err := p.sendMessage(key, message{id: interestedMessageId, payload: nil})
+
+	if err != nil {
+		return fmt.Errorf("failed to send \"%s\" message: %w", interestedMessageId, err)
+	}
+
+	select {
+	case err := <-req.errorCh:
+		return err
+	case <-req.responseCh:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timed out waiting for \"%s\" message from peer: %s", unchokeMessageId, p.remotePeerAddress)
+	}
+}
+
+func (p *peerConnection) sendMessage(key string, msg message) (*messageRequest, error) {
 	if p.pendingRequests == nil {
 		return nil, fmt.Errorf("pending requests map is not initialized")
 	}
 
-	req := messageRequest{
-		errorCh:    make(chan error, 1),
-		responseCh: make(chan []byte, 1),
+	if p.writer == nil {
+		return nil, fmt.Errorf("peer connection writer has not been initialized")
 	}
 
-	p.pendingRequests[key] = &req
-	p.writer.messages <- msg
+	if p.closeCh == nil {
+		return nil, fmt.Errorf("peer connection has not been successfully initialized")
+	}
 
-	return &req, nil
+	p.pendingRequestsMu.Lock()
+	defer p.pendingRequestsMu.Unlock()
+
+	var req *messageRequest
+
+	if existingReq, ok := p.pendingRequests[key]; ok {
+		req = existingReq
+	} else {
+		req = &messageRequest{errorCh: make(chan error, 1), responseCh: make(chan []byte, 1)}
+		p.pendingRequests[key] = req
+	}
+
+	select {
+	case <-p.closeCh:
+		return nil, fmt.Errorf("peer connection has been closed")
+	case p.writer.messages <- msg:
+		return req, nil
+	case <-time.After(5 * time.Second):
+		return nil, fmt.Errorf("timed out waiting to send message to buffer")
+	}
 }
 
-func (p *peerConnection) sendMetadataMessageRequest(pieceIndex int) ([]byte, error) {
+func (p *peerConnection) sendMetadataPieceRequest(pieceIndex int) ([]byte, error) {
 	key := fmt.Sprintf("metadata-piece-request-%d", pieceIndex)
 	defer p.deleteRequest(key)
 
@@ -752,7 +809,7 @@ func (p *peerConnection) sendMetadataMessageRequest(pieceIndex int) ([]byte, err
 	index += 1
 	copy(messagePayloadBuffer[index:], []byte(bencodedString))
 
-	req, err := p.sendMessageRequest(key, message{id: extensionMessageId, payload: messagePayloadBuffer})
+	req, err := p.sendMessage(key, message{id: extensionMessageId, payload: messagePayloadBuffer})
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to send metadata piece request: %w", err)
@@ -765,7 +822,7 @@ func (p *peerConnection) sendMetadataMessageRequest(pieceIndex int) ([]byte, err
 	case err := <-req.errorCh:
 		return nil, err
 
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		return nil, fmt.Errorf("timed out waiting for metadata piece response from peer")
 	}
 }

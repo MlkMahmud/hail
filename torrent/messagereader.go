@@ -1,11 +1,13 @@
 package torrent
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"time"
 )
 
 type messageReader struct {
@@ -18,10 +20,6 @@ type messageReaderOpts struct {
 	conn              net.Conn
 	messageBufferSize int
 }
-
-const (
-	maxMessageLength = 16 * 1024
-)
 
 func newMessageReader(opts messageReaderOpts) *messageReader {
 	return &messageReader{
@@ -58,10 +56,6 @@ func (mr *messageReader) readMessage() (message, error) {
 		return message{id: keepAliveMessageId, payload: nil}, nil
 	}
 
-	if messageLength > maxMessageLength {
-		return message{}, fmt.Errorf("message length %d exceeds maximum allowed length %d", messageLength, maxMessageLength)
-	}
-
 	messageBuffer := make([]byte, messageLength)
 
 	if err := mr.readBuffer(messageBuffer); err != nil {
@@ -74,20 +68,35 @@ func (mr *messageReader) readMessage() (message, error) {
 	}, nil
 }
 
-func (mr *messageReader) run() {
+func (mr *messageReader) run(ctx context.Context) {
+	go func(ct context.Context, reader *messageReader) {
+		<-ct.Done()
+		// unblocks any blocked read operation on the net.conn 
+		reader.conn.SetReadDeadline(time.Now())
+	}(ctx, mr)
+
 	for {
-		message, err := mr.readMessage()
-
-		if err != nil {
-			mr.errCh <- err
-			close(mr.errCh)
+		select {
+		case <-ctx.Done():
 			return
-		}
 
-		if message.id == keepAliveMessageId {
-			continue
-		}
+		default:
+			message, err := mr.readMessage()
+			if err != nil {
+				mr.errCh <- err
+				close(mr.errCh)
+				return
+			}
 
-		mr.messages <- message
+			if message.id == keepAliveMessageId {
+				continue
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case mr.messages <- message:
+			}
+		}
 	}
 }

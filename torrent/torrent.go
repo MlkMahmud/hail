@@ -146,14 +146,16 @@ func (tr *Torrent) enqueuePieces(ctx context.Context) {
 		panic("torrent metadata is not available; cannot enqueue pieces")
 	}
 
-	for _, piece := range tr.info.pieces {
+	for i := 0; i < len(tr.info.pieces); {
 		select {
 		case <-ctx.Done():
 			return
+
 		case failedPiece := <-tr.failedPiecesCh:
 			tr.queuedPiecesCh <- failedPiece
-		default:
-			tr.queuedPiecesCh <- piece
+
+		case tr.queuedPiecesCh <- tr.info.pieces[i]:
+			i++
 		}
 	}
 
@@ -463,56 +465,59 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 					if err != nil {
 						log.Println(err)
 						sem.Release()
-						break
+					} else {
+						go func(pc *peerConnection, tr *Torrent) {
+							defer sem.Release()
+
+							for {
+								select {
+								case <-ctx.Done():
+									{
+										return
+									}
+
+								case piece := <-tr.queuedPiecesCh:
+									{
+										if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: len(tr.info.pieces)}); err != nil {
+											log.Println(err)
+											tr.failedPiecesCh <- piece
+											tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
+											return
+										}
+
+										// todo: remove sleep (wait for bitfield request on peer connection initialization)
+										time.Sleep(2000)
+										downloadedPiece, err := pc.downloadPiece(piece)
+
+										if err != nil && pc.failedAttempts >= peerConnectionMaxFailedAttempts {
+											// todo: send to 'failedPeersCh"
+											tr.failedPiecesCh <- piece
+											tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
+											return
+										}
+
+										if err != nil {
+											log.Println(err)
+											pc.failedAttempts += 1
+											tr.failedPiecesCh <- piece
+											continue
+										}
+
+										if err := downloadedPiece.validateIntegrity(); err != nil {
+											// todo: implement hash fail threshold
+											log.Println(err)
+											pc.failedAttempts += 1
+											tr.failedPiecesCh <- piece
+											continue
+										}
+
+										tr.downloadedPieceCh <- *downloadedPiece
+									}
+								}
+							}
+						}(conn, tr)
 					}
 				}
-
-				go func(pc *peerConnection, tr *Torrent) {
-					defer sem.Release()
-
-					for {
-						select {
-						case <-ctx.Done():
-							{
-								return
-							}
-
-						case piece := <-tr.queuedPiecesCh:
-							{
-								if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: len(tr.info.pieces)}); err != nil {
-									log.Println(err)
-									tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
-									return
-								}
-
-								downloadedPiece, err := pc.downloadPiece(piece)
-
-								if err != nil && pc.failedAttempts >= peerConnectionMaxFailedAttempts {
-									// todo: send to 'failedPeersCh"
-									tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
-									return
-								}
-
-								if err != nil {
-									log.Println(err)
-									pc.failedAttempts += 1
-									tr.failedPiecesCh <- piece
-									continue
-								}
-
-								if err := downloadedPiece.validateIntegrity(); err != nil {
-									// todo: do we simple increment the fail count for peer that send piece that fail the hash check?
-									log.Println(err)
-									pc.failedAttempts += 1
-									tr.failedPiecesCh <- piece
-									continue
-								}
-
-								tr.downloadedPieceCh <- *downloadedPiece
-							}
-						}
-					}
-				}(conn, tr)
 			}
 		}
 	}
