@@ -329,6 +329,7 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 					wg.Add(1)
 					sem.Acquire()
 
+					// todo: cancel any running goroutines
 					go func() {
 						defer sem.Release()
 						defer wg.Done()

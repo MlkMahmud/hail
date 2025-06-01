@@ -51,11 +51,6 @@ type peerConnectionOpts struct {
 	remotePeer peer
 }
 
-type readWriteMutex struct {
-	writer sync.Mutex
-	reader sync.Mutex
-}
-
 const (
 	byteSize = 8
 )
@@ -103,11 +98,7 @@ func (p *peerConnection) deleteRequest(key string) {
 	p.pendingRequestsMu.Lock()
 	defer p.pendingRequestsMu.Unlock()
 
-	if _, ok := p.pendingRequests[key]; ok {
-		delete(p.pendingRequests, key)
-	}
-
-	return
+	delete(p.pendingRequests, key)
 }
 
 // todo: move to Torrent struct?
@@ -497,31 +488,37 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 	}
 
 	go func() {
-		var err error
-		defer shutDownFn(err)
+		err := error(nil)
+		exitLoop := false
 
-		for {
+		handleError := func(e error) {
+			err = e
+			exitLoop = true
+		}
+
+		for !exitLoop {
 			select {
 			case msg, ok := <-p.reader.messages:
 				if !ok {
-					err = fmt.Errorf("reader.messages channel closed unexpectedly")
-					return
+					handleError(fmt.Errorf("reader.messages channel closed unexpectedly"))
 				}
 
-				if err = p.handleIncomingMessage(msg); err != nil {
-					return
+				if e := p.handleIncomingMessage(msg); e != nil {
+					handleError(e)
 				}
 
-			case err = <-p.reader.errCh:
-				return
+			case e := <-p.reader.errCh:
+				handleError(e)
 
-			case err = <-p.writer.errCh:
-				return
+			case e := <-p.writer.errCh:
+				handleError(e)
 
 			case <-p.closeCh:
-				return
+				handleError(nil)
 			}
 		}
+		
+		shutDownFn(err)
 	}()
 
 	if err := p.sendExtensionHandshake(); err != nil {
