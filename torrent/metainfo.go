@@ -284,6 +284,7 @@ func newTorrentFromMetainfoFile(data []byte, opts NewTorrentOpts) (*Torrent, err
 
 	torrent.info = torrentInfo
 	torrent.infoHash = sha1.Sum([]byte(bencodedValue))
+	torrent.logger = opts.Logger
 	torrent.peerId = opts.PeerId
 	torrent.outputDir = opts.OutputDir
 

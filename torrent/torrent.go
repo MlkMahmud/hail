@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -38,6 +39,7 @@ const (
 )
 
 type NewTorrentOpts struct {
+	Logger    *slog.Logger
 	PeerId    [20]byte
 	OutputDir string
 	Src       string
@@ -48,6 +50,8 @@ type Torrent struct {
 	info *torrentInfo
 
 	infoHash [sha1.Size]byte
+
+	logger *slog.Logger
 
 	bannedPeersCh               chan string
 	downloadedPieceCh           chan downloadedPiece
@@ -202,6 +206,7 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 
 					pc := newPeerConnection(peerConnectionOpts{
 						infoHash:   tr.infoHash,
+						logger:     tr.logger,
 						peerId:     tr.peerId,
 						remotePeer: peer,
 					})
@@ -237,19 +242,19 @@ func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
 				tr.status = status
 				switch status {
 				case completed:
-					log.Println("torrent download has completed.")
+					log.Print("torrent download has completed.")
 				case connecting:
-					log.Println("connecting to peers...")
+					log.Print("connecting to peers...")
 				case downloading:
-					log.Println("downloading torrent files...")
+					log.Print("downloading torrent files...")
 				case downloadingMetadata:
-					log.Println("downloading metadata...")
+					log.Print("downloading metadata...")
 				case finished:
-					log.Println("finished downloading all pieces")
+					log.Print("finished downloading all pieces")
 				case flushing:
-					log.Println("writing downloaded pieces to disk...")
+					log.Print("writing downloaded pieces to disk...")
 				case stopped:
-					log.Println("stopping torrent...")
+					log.Print("stopping torrent...")
 				}
 			}
 		}
@@ -277,7 +282,9 @@ func (tr *Torrent) printProgress() {
 	if tr.info.length > 0 {
 		progress = float64(tr.downloaded) / float64(tr.info.length) * 100
 	}
+
 	log.Printf("(%.2f%%) downloaded %d piece(s) from %d peers\n", progress, tr.downloadedPieces, tr.peerConnectionPool.size())
+
 }
 
 // Starts the announcer routine for the Torrent instance.
@@ -337,7 +344,7 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 						peers, err := tr.sendAnnounceRequest(trackerUrl)
 
 						if err != nil {
-							log.Printf("announce request failed: %v", err)
+							tr.logger.Debug(fmt.Sprintf("announce request failed: %v", err))
 							return
 						}
 
@@ -388,16 +395,15 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 
 		case pc := <-tr.metadataPeersCh:
 			{
-				// todo: add debug logs
 				if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: 0}); err != nil {
-					log.Println(err)
+					tr.logger.Debug(err.Error())
 					break
 				}
 
 				defer pc.close()
 
 				if !pc.supportsExtension(utMetadata) {
-					log.Printf("peer connection \"%s\" does not support the metadata extension\n", pc.remotePeerAddress)
+					tr.logger.Debug(fmt.Sprintf("peer connection \"%s\" does not support the metadata extension\n", pc.remotePeerAddress))
 					break
 				}
 
@@ -406,13 +412,16 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 				metadata, err := pc.downloadMetadata()
 
 				if err != nil {
-					log.Println(err)
+					tr.logger.Debug(err.Error())
 					break
 				}
 
 				if metadataHash := sha1.Sum(metadata); !bytes.Equal(tr.infoHash[:], metadataHash[:]) {
 					// todo: blacklist peer?
-					log.Printf("metadata hash mismatch for peer \"%s\"; expected \"%x\", got \"%x\"", pc.remotePeerAddress, tr.infoHash, metadataHash)
+					tr.logger.Debug(
+						fmt.Sprintf("metadata hash mismatch for peer \"%s\"; expected \"%x\", got \"%x\"", pc.remotePeerAddress, tr.infoHash, metadataHash),
+					)
+
 					break
 				}
 
@@ -431,7 +440,9 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 				info, err := parseInfoDict(metadataDict)
 
 				if err != nil {
-					log.Printf("failed to parse metadata info dictionary from peer \"%s\": %v", pc.remotePeerAddress, err)
+					tr.logger.Debug(
+						fmt.Sprintf("failed to parse metadata info dictionary from peer \"%s\": %v", pc.remotePeerAddress, err),
+					)
 					break
 				}
 
@@ -464,7 +475,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 					return
 				default:
 					if err != nil {
-						log.Println(err)
+						tr.logger.Debug(err.Error())
 						sem.Release()
 					} else {
 						go func(pc *peerConnection, tr *Torrent) {
@@ -480,7 +491,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 								case piece := <-tr.queuedPiecesCh:
 									{
 										if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: len(tr.info.pieces)}); err != nil {
-											log.Println(err)
+											tr.logger.Debug(err.Error())
 											tr.failedPiecesCh <- piece
 											tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
 											return
@@ -498,7 +509,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 										}
 
 										if err != nil {
-											log.Println(err)
+											tr.logger.Debug(err.Error())
 											pc.failedAttempts += 1
 											tr.failedPiecesCh <- piece
 											continue
@@ -506,7 +517,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 
 										if err := downloadedPiece.validateIntegrity(); err != nil {
 											// todo: implement hash fail threshold
-											log.Println(err)
+											tr.logger.Debug(err.Error())
 											pc.failedAttempts += 1
 											tr.failedPiecesCh <- piece
 											continue
@@ -538,7 +549,7 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 
 					//todo: handle error
 					if err != nil {
-						log.Print(err)
+						tr.logger.Debug(err.Error())
 						continue
 					}
 
@@ -566,13 +577,17 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 					}
 
 					if writeLen <= 0 {
-						log.Printf("skipping write: calculated writeLen <= 0 for file %q (fileOffset=%d, pieceStartOffset=%d, pieceEndOffset=%d, file.length=%d, piece.index=%d)", file.name, fileOffset, pieceStartOffset, pieceEndOffset, file.length, downloadedPiece.piece.index)
+						// todo: this condition should never evaluate to true, if it does throw an error
+						tr.logger.Debug(
+							fmt.Sprintf("skipping write: calculated writeLen <= 0 for file %q (fileOffset=%d, pieceStartOffset=%d, pieceEndOffset=%d, file.length=%d, piece.index=%d)", file.name, fileOffset, pieceStartOffset, pieceEndOffset, file.length, downloadedPiece.piece.index),
+						)
+
 						continue
 					}
 
 					if _, err := fptr.WriteAt(downloadedPiece.data[pieceStartOffset:pieceStartOffset+writeLen], fileOffset); err != nil {
 						// todo: properly handle this error
-						log.Println(err)
+						tr.logger.Debug(err.Error())
 					}
 
 					fptr.Close()

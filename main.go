@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +13,10 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+var (
+	logger *slog.Logger
+)
+
 func handleDownload(ctx *cli.Context) error {
 	outputDir := ctx.String("output-dir")
 	src := ctx.String("torrent")
@@ -19,7 +24,7 @@ func handleDownload(ctx *cli.Context) error {
 	sessionId := [20]byte{}
 	copy(sessionId[:], fmt.Appendf(nil, "-HA001-%s", utils.GenerateRandomString(13, "")))
 
-	sesh := session.NewSession(sessionId)
+	sesh := session.NewSession(sessionId, logger)
 
 	if err := sesh.AddTorrent(src, outputDir); err != nil {
 		return err
@@ -39,6 +44,16 @@ func main() {
 		Name:        "Hail",
 		Usage:       "Download all your favourite torrents.",
 		Description: "A basic BitTorrent client",
+		Before: func(ctx *cli.Context) error {
+			logLevel := slog.LevelError
+
+			if ctx.Bool("d") {
+				logLevel = slog.LevelDebug
+			}
+
+			logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+			return nil
+		},
 		Commands: []*cli.Command{
 			{
 				Name:   "download",
@@ -57,6 +72,13 @@ func main() {
 						Required: true,
 					},
 				},
+			},
+		},
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:    "debug",
+				Aliases: []string{"d"},
+				Usage:   "enable debug logging output for troubleshooting and development",
 			},
 		},
 	}

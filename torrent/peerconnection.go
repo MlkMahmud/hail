@@ -6,7 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"net"
 	"sync"
@@ -27,6 +27,7 @@ type peerConnection struct {
 	failedAttempts     int
 	hashFails          int
 	infoHash           [sha1.Size]byte
+	logger             *slog.Logger
 	metadataSize       int
 	peerExtensions     map[extensionName]uint8
 	peerId             [20]byte
@@ -47,6 +48,7 @@ type peerConnectionInitConfig struct {
 
 type peerConnectionOpts struct {
 	infoHash   [sha1.Size]byte
+	logger     *slog.Logger
 	peerId     [20]byte
 	remotePeer peer
 }
@@ -69,6 +71,7 @@ const (
 func newPeerConnection(opts peerConnectionOpts) *peerConnection {
 	return &peerConnection{
 		infoHash:          opts.infoHash,
+		logger:            opts.logger,
 		remotePeerAddress: fmt.Sprintf("%s:%d", opts.remotePeer.ipAddress, opts.remotePeer.port),
 		peerId:            opts.peerId,
 		pendingRequests:   map[string]*messageRequest{},
@@ -288,7 +291,9 @@ func (p *peerConnection) handleExtensionMessage(msg message) error {
 	case byte(utMetadataId):
 		return p.handleMetadataExtensionMessage(msg.payload)
 	default:
-		log.Printf("received unknown extension message id: %d", extendedMsgId)
+		p.logger.Debug(
+			fmt.Sprintf("received unknown extension message id: %d", extendedMsgId),
+		)
 		return nil
 	}
 }
@@ -480,7 +485,7 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 
 	shutDownFn := func(err error) {
 		if err != nil {
-			log.Println(err)
+			p.logger.Debug(err.Error())
 		}
 
 		cancelFunc()
@@ -517,7 +522,7 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 				handleError(nil)
 			}
 		}
-		
+
 		shutDownFn(err)
 	}()
 

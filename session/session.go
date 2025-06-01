@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/MlkMahmud/hail/torrent"
 )
@@ -9,17 +10,20 @@ import (
 type session struct {
 	id       [20]byte
 	torrents map[string]*torrent.Torrent
+	logger   *slog.Logger
 }
 
-func NewSession(id [20]byte) *session {
+func NewSession(id [20]byte, logger *slog.Logger) *session {
 	return &session{
 		id:       id,
+		logger:   logger,
 		torrents: map[string]*torrent.Torrent{},
 	}
 }
 
 func (s *session) AddTorrent(src string, outputDir string) error {
 	tr, err := torrent.NewTorrent(torrent.NewTorrentOpts{
+		Logger:    s.logger,
 		PeerId:    s.id,
 		OutputDir: outputDir,
 		Src:       src,

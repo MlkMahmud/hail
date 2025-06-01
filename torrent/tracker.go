@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -64,7 +63,7 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) ([]peer, error) {
 	}
 
 	if warningMsg, ok := dict["warning message"].(string); ok {
-		log.Println(warningMsg)
+		t.logger.Debug(warningMsg)
 	}
 
 	peers, exists := dict["peers"]

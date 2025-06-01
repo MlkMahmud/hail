@@ -84,6 +84,7 @@ func newTorrentFromMagnetURL(magnetURL *url.URL, opts NewTorrentOpts) (*Torrent,
 	}
 
 	torrent.infoHash = infoHash
+	torrent.logger = opts.Logger
 	torrent.peerId = opts.PeerId
 	torrent.outputDir = opts.OutputDir
 
