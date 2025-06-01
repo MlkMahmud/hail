@@ -1,34 +1,95 @@
-[![progress-banner](https://backend.codecrafters.io/progress/bittorrent/e125f155-53f5-4c17-bf26-1d9242a2f747)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
+# Hail
 
-This is a starting point for Go solutions to the
-["Build Your Own BitTorrent" Challenge](https://app.codecrafters.io/courses/bittorrent/overview).
+**Hail** is a modern, experimental BitTorrent client written in Go. It implements core BitTorrent protocol features, supports magnet links, multi-file torrents, and advanced extensions for robust peer-to-peer file sharing.
 
-In this challenge, you’ll build a BitTorrent client that's capable of parsing a
-.torrent file and downloading a file from a peer. Along the way, we’ll learn
-about how torrent files are structured, HTTP trackers, BitTorrent’s Peer
-Protocol, pipelining and more.
+---
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+## Features
 
-# Passing the first stage
+- **Core BitTorrent Protocol**: Implements the core protocol for peer discovery, piece exchange, and file downloading.
+- **Magnet Link Support**: Download torrents using magnet URIs—no need for .torrent files.
+- **Multi-file Torrents**: Handles torrents containing multiple files and directories.
+- **Files List Parsing**: Correctly parses and downloads all files listed in a torrent.
+- **Multitracker Metadata Extension**: Supports torrents with multiple trackers for improved peer discovery.
+- **UDP Trackers**: Communicates with trackers over UDP for faster and more efficient peer discovery.
+- **Extension Protocols**:
+  - **Metadata Exchange**: Supports the extension for peers to send metadata files (BEP 9), enabling magnet link downloads without a .torrent file.
+- **Leeching Only**: Currently, Hail supports downloading (leeching) only. Seeding (uploading to others) is planned for future releases.
 
-The entry point for your BitTorrent implementation is in `app/main.go`. Study
-and uncomment the relevant code, and push your changes to pass the first stage:
+---
+
+## Usage
+
+### Installation
+
+Clone the repository and build the project:
 
 ```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
+git clone https://github.com/MlkMahmud/hail.git
+cd hail
+go build -o hail
 ```
 
-Time to move on to the next stage!
+### Command-Line Interface
 
-# Stage 2 & beyond
+```
+hail [--debug] download --torrent <torrent-file-or-magnet-link-or-http-url> --output-dir <destination-directory>
+```
 
-Note: This section is for stages 2 and beyond.
+#### Flags
 
-1. Ensure you have `go (1.24)` installed locally
-1. Run `./your_bittorrent.sh` to run your program, which is implemented in
-   `app/main.go`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+- `--torrent, -t`  
+  Path to a `.torrent` file, a magnet link, or a HTTP URL that resolves to a `.torrent` file (required).
+- `--output-dir, -o`  
+  Destination directory for downloaded files (required).
+- `--debug, -d`  
+  Enable debug logging output for troubleshooting and development (optional).
+
+---
+
+## Examples
+
+### Downloading with a .torrent file
+
+```sh
+./hail download --torrent ./ubuntu.torrent --output-dir ~/Downloads
+```
+
+### Downloading with a HTTP URL
+
+```sh
+./hail download --torrent "https://cdimage.debian.org/debian-cd/current/amd64/bt-dvd/debian-12.11.0-amd64-DVD-1.iso.torrent" --output-dir ~/Downloads
+```
+
+
+### Downloading with a magnet link
+
+```sh
+./hail download --torrent "magnet:?xt=urn:btih:..." --output-dir ~/Downloads
+```
+
+### Enabling Debug Logging
+
+```sh
+./hail --debug download --torrent ./ubuntu.torrent --output-dir ~/Downloads
+```
+
+---
+
+## Roadmap
+
+- [x] Leeching (downloading) support
+- [ ] Seeding (uploading) support
+- [ ] DHT (Distributed Hash Table) support
+- [ ] Improved error handling and peer management
+- [ ] Web UI
+
+---
+
+## License
+
+MIT License
+
+---
+
+**Hail** is a work in progress. Contributions and feedback are welcome!
