@@ -336,7 +336,7 @@ func (tr *Torrent) sendUDPAnnounceRequest(trackerUrl string) ([]peer, error) {
 				attempts += 1
 			}()
 
-			if _, err := utils.ConnWriteFull(conn, reqBuffer, 0); err != nil {
+			if _, err := utils.ConnWriteFull(conn, reqBuffer, time.Now().Add(5*time.Second)); err != nil {
 				return nil, fmt.Errorf("failed to send 'announce' request to tracker: %w", err)
 			}
 
@@ -398,7 +398,7 @@ func sendUDPConnectRequest(conn net.Conn, transactionId uint32) (uint64, error) 
 				attempts += 1
 			}()
 
-			if _, err := utils.ConnWriteFull(conn, reqBuffer, 5*time.Second); err != nil {
+			if _, err := utils.ConnWriteFull(conn, reqBuffer, time.Now().Add(5*time.Second)); err != nil {
 				return 0, fmt.Errorf("failed to send 'connect' message request to tracker: %w", err)
 			}
 
@@ -406,9 +406,9 @@ func sendUDPConnectRequest(conn net.Conn, transactionId uint32) (uint64, error) 
 				If a response is not received after 15 * 2 ^ n seconds,
 				the client should retransmit the request, where n starts at 0 and is increased up to 8 (3840 seconds) after every retransmission.
 			*/
-			timeout := time.Duration(15 * (int(math.Pow(2, float64(attempts)))))
+			timeout := time.Duration(15*(int(math.Pow(2, float64(attempts))))) * time.Second
 
-			if _, err := utils.ConnReadFull(conn, resBuffer, timeout); err != nil {
+			if _, err := utils.ConnReadFull(conn, resBuffer, time.Now().Add(timeout)); err != nil {
 				return 0, fmt.Errorf("failed to receive 'connect' message response from tracker: %w", err)
 			}
 

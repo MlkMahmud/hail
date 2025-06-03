@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/MlkMahmud/hail/utils"
 )
 
 type messageReader struct {
@@ -30,7 +32,7 @@ func newMessageReader(opts messageReaderOpts) *messageReader {
 }
 
 func (mr *messageReader) readBuffer(buffer []byte) error {
-	_, err := io.ReadFull(mr.conn, buffer)
+	_, err := utils.ConnReadFull(mr.conn, buffer, time.Time{})
 
 	if errors.Is(err, io.EOF) {
 		return fmt.Errorf("remote peer closed the connection")
@@ -71,7 +73,7 @@ func (mr *messageReader) readMessage() (message, error) {
 func (mr *messageReader) run(ctx context.Context) {
 	go func(ct context.Context, reader *messageReader) {
 		<-ct.Done()
-		// unblocks any blocked read operation on the net.conn 
+		// unblocks any blocked read operation on the net.conn
 		reader.conn.SetReadDeadline(time.Now())
 	}(ctx, mr)
 

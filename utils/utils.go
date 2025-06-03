@@ -31,62 +31,38 @@ func FileExists(filepath string) bool {
 	return !errors.Is(err, os.ErrNotExist)
 }
 
-func ConnReadFull(conn net.Conn, buffer []byte, wait time.Duration) (int, error) {
-	bufferSize := len(buffer)
-	readStartIndex := 0
-
-	duration := wait
-
-	if duration == 0 {
-		duration = 5 * time.Second
-	}
-
-	if err := conn.SetReadDeadline(time.Now().Add(duration)); err != nil {
-		return readStartIndex, err
-	}
-
-	for readStartIndex < bufferSize {
-		bytesRead, err := conn.Read(buffer[readStartIndex:])
-
-		if err == io.EOF {
-			return readStartIndex, io.ErrUnexpectedEOF
+// Reads exactly len(buffer) bytes from the provided net.Conn into buffer.
+// If a non-zero deadline is provided, it sets the read deadline on the connection before reading.
+// If the deadline is zero, no deadline is set and the function may block indefinitely
+// until all bytes are read or an error occurs.
+// Returns the number of bytes read and any error encountered.
+func ConnReadFull(conn net.Conn, buffer []byte, deadline time.Time) (int, error) {
+	if !deadline.IsZero() {
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			return 0, err
 		}
 
-		if err != nil {
-			return readStartIndex, err
-		}
-
-		readStartIndex += bytesRead
+		defer conn.SetReadDeadline(time.Time{})
 	}
 
-	return readStartIndex, nil
+	return io.ReadFull(conn, buffer)
 }
 
-func ConnWriteFull(conn net.Conn, buffer []byte, wait time.Duration) (int, error) {
-	bufferSize := len(buffer)
-	writeStartIndex := 0
-
-	duration := wait
-
-	if duration == 0 {
-		duration = 5 * time.Second
-	}
-
-	if err := conn.SetWriteDeadline(time.Now().Add(duration)); err != nil {
-		return writeStartIndex, err
-	}
-
-	for writeStartIndex < bufferSize {
-		bytesWritten, err := conn.Write(buffer[writeStartIndex:])
-
-		if err != nil {
-			return writeStartIndex, err
+// Writes exactly len(buffer) bytes from the provided buffer to the given net.Conn.
+// If a non-zero deadline is provided, it sets the write deadline on the connection before writing.
+// If the deadline is zero, no deadline is set and the function may block indefinitely
+// until all bytes are written or an error occurs.
+// Returns the number of bytes written and any error encountered.
+func ConnWriteFull(conn net.Conn, buffer []byte, deadline time.Time) (int, error) {
+	if !deadline.IsZero() {
+		if err := conn.SetWriteDeadline(deadline); err != nil {
+			return 0, err
 		}
 
-		writeStartIndex += bytesWritten
+		defer conn.SetWriteDeadline(time.Time{})
 	}
 
-	return writeStartIndex, nil
+	return conn.Write(buffer)
 }
 
 func GenerateRandomString(length int, charset string) string {

@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"net"
 	"time"
+
+	"github.com/MlkMahmud/hail/utils"
 )
 
 type messageWriter struct {
@@ -27,13 +29,7 @@ func newMessageWriter(opts messageWriterOpts) *messageWriter {
 }
 
 func (mw *messageWriter) writeBuffer(buffer []byte, deadline time.Time) error {
-	if !deadline.IsZero() {
-		if err := mw.conn.SetWriteDeadline(deadline); err != nil {
-			return err
-		}
-	}
-
-	if _, err := mw.conn.Write(buffer); err != nil {
+	if _, err := utils.ConnWriteFull(mw.conn, buffer, deadline); err != nil {
 		return err
 	}
 
