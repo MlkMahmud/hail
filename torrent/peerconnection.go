@@ -496,15 +496,7 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 		messageBufferSize: messageBufferSize,
 	})
 
-	if err := p.initiateHandshake(); err != nil {
-		p.close()
-		return err
-	}
-
 	ctx, cancelFunc := context.WithCancel(context.Background())
-
-	go p.reader.run(ctx)
-	go p.writer.run(ctx)
 
 	shutDownFn := func(err error) {
 		if err != nil {
@@ -515,39 +507,17 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 		p.close()
 	}
 
-	go func() {
-		err := error(nil)
-		exitLoop := false
-
-		handleError := func(e error) {
-			err = e
-			exitLoop = true
-		}
-
-		for !exitLoop {
-			select {
-			case msg, ok := <-p.reader.messages:
-				if !ok {
-					handleError(fmt.Errorf("reader.messages channel closed unexpectedly"))
-				}
-
-				if e := p.handleIncomingMessage(msg); e != nil {
-					handleError(e)
-				}
-
-			case e := <-p.reader.errCh:
-				handleError(e)
-
-			case e := <-p.writer.errCh:
-				handleError(e)
-
-			case <-p.closeCh:
-				handleError(nil)
-			}
-		}
-
+	if err := p.initiateHandshake(); err != nil {
 		shutDownFn(err)
-	}()
+		return err
+	}
+
+	if err := p.startMessageReaderAndWriter(ctx); err != nil {
+		shutDownFn(err)
+		return err
+	}
+
+	go p.startConnectionListener(shutDownFn)
 
 	if err := p.sendExtensionHandshake(); err != nil {
 		shutDownFn(err)
@@ -850,6 +820,62 @@ func (p *peerConnection) sendMetadataPieceRequest(pieceIndex int) ([]byte, error
 	case <-time.After(5 * time.Second):
 		return nil, fmt.Errorf("timed out waiting for metadata piece response from peer")
 	}
+}
+
+// Starts a loop that listens for incoming messages and errors from the peer connection's reader and writer.
+//
+// It invokes the provided exitFn callback with an error when the connection is closed, an error occurs, or the listener exits for any reason.
+// The listener will exit if the reader or writer encounters an error, the close channel is closed, or the reader's message channel is closed unexpectedly.
+func (p *peerConnection) startConnectionListener(exitFn func(err error)) {
+	err := error(nil)
+	exitLoop := false
+
+	handleError := func(e error) {
+		err = e
+		exitLoop = true
+	}
+
+	for !exitLoop {
+		select {
+		case msg, ok := <-p.reader.messages:
+			if !ok {
+				handleError(fmt.Errorf("reader.messages channel closed unexpectedly"))
+			}
+
+			if e := p.handleIncomingMessage(msg); e != nil {
+				handleError(e)
+			}
+
+		case e := <-p.reader.errCh:
+			handleError(e)
+
+		case e := <-p.writer.errCh:
+			handleError(e)
+
+		case <-p.closeCh:
+			handleError(nil)
+		}
+	}
+
+	exitFn(err)
+}
+
+// Starts the message reader and writer goroutines for the peer connection.
+// It launches the reader and writer using the provided context, allowing them to be cancelled when the context is done.
+// Returns an error if either the reader or writer is not initialized.
+func (p *peerConnection) startMessageReaderAndWriter(ctx context.Context) error {
+	if p.reader == nil {
+		return fmt.Errorf("cannot start message reader: reader is not initialized")
+	}
+
+	if p.writer == nil {
+		return fmt.Errorf("cannot start message writer: writer is not initialized")
+	}
+
+	go p.reader.run(ctx)
+	go p.writer.run(ctx)
+
+	return nil
 }
 
 // Checks if the peer supports a specific extension.
