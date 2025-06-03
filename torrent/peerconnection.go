@@ -22,6 +22,7 @@ type blockRequestResult struct {
 
 type peerConnection struct {
 	bitfield           []bool
+	bitfieldReadyCh    chan struct{}
 	closeCh            chan struct{}
 	conn               net.Conn
 	failedAttempts     int
@@ -134,6 +135,10 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 		return nil, fmt.Errorf("peer connection has not been established")
 	}
 
+	if err := p.waitForBitfieldMessage(); err != nil {
+		return nil, err
+	}
+
 	if !p.hasPiece(piece.index) {
 		// todo: create custom error so caller can handle it differently
 		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.remotePeerAddress, piece.index)
@@ -190,11 +195,29 @@ func (p *peerConnection) handleBitfieldMessage(msg message) error {
 		return fmt.Errorf("expected message id to be '%s', but got '%s'", bitfieldMessageId, msg.id)
 	}
 
+	select {
+	case <-p.bitfieldReadyCh:
+		return fmt.Errorf("bitfield message already received for this connection")
+	default:
+	}
+
+	defer func() {
+		select {
+		case <-p.bitfieldReadyCh:
+		default:
+			close(p.bitfieldReadyCh)
+		}
+	}()
+
 	numOfPieces := len(p.bitfield)
 	expectedBitFieldLength := int(math.Ceil(float64(numOfPieces) / byteSize))
 
 	if numOfPieces == 0 {
 		return nil
+	}
+
+	if msg.payload == nil {
+		return fmt.Errorf("received nil payload for bitfield message")
 	}
 
 	if receivedBitfieldLength := len(msg.payload); receivedBitfieldLength != expectedBitFieldLength {
@@ -482,6 +505,7 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 
 	p.conn = conn
 	p.bitfield = make([]bool, config.bitfieldSize)
+	p.bitfieldReadyCh = make(chan struct{}, 1)
 	p.closeCh = make(chan struct{}, 1)
 
 	messageBufferSize := 10
@@ -883,4 +907,18 @@ func (p *peerConnection) supportsExtension(ext extensionName) bool {
 	extId, ok := p.peerExtensions[ext]
 
 	return ok && extId != 0
+}
+
+func (p *peerConnection) waitForBitfieldMessage() error {
+	if p.bitfieldReadyCh == nil {
+		return fmt.Errorf("bitfield channel has not been initialized")
+	}
+
+	select {
+	case <-p.bitfieldReadyCh:
+		return nil
+
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timed out waiting for bitfield message")
+	}
 }

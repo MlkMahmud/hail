@@ -497,8 +497,6 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 											return
 										}
 
-										// todo: remove sleep (wait for bitfield request on peer connection initialization)
-										time.Sleep(2000)
 										downloadedPiece, err := pc.downloadPiece(piece)
 
 										if err != nil && pc.failedAttempts >= peerConnectionMaxFailedAttempts {
