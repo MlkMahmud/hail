@@ -215,6 +215,26 @@ func (p *peerConnection) handleBitfieldMessage(msg message) error {
 	return nil
 }
 
+func (p *peerConnection) handleHaveMessage(msg message) error {
+	if msg.id != haveMessageId {
+		return fmt.Errorf("expected message id to be '%s', but got '%s'", haveMessageId, msg.id)
+	}
+
+	if payloadLength := len(msg.payload); payloadLength != 4 {
+		return fmt.Errorf("invalid 'have' message: expected payload length of 4 bytes, got %d", payloadLength)
+	}
+
+	pieceIndex := binary.BigEndian.Uint32(msg.payload)
+
+	if bitfieldSize := len(p.bitfield); int(pieceIndex) >= bitfieldSize {
+		return fmt.Errorf("invalid 'have' message: piece index %d out of range (bitfield size: %d)", pieceIndex, bitfieldSize)
+	}
+
+	p.bitfield[pieceIndex] = true
+
+	return nil
+}
+
 func (p *peerConnection) handleExtensionHandshakeMessage(payload []byte) error {
 	var err error
 
@@ -376,6 +396,9 @@ func (p *peerConnection) handleIncomingMessage(msg message) error {
 
 	case extensionMessageId:
 		err = p.handleExtensionMessage(msg)
+
+	case haveMessageId:
+		err = p.handleHaveMessage(msg)
 
 	case pieceMessageId:
 		err = p.handlePieceMessage(msg)
