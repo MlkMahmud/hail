@@ -105,7 +105,6 @@ func (p *peerConnection) deleteRequest(key string) {
 	delete(p.pendingRequests, key)
 }
 
-// todo: move to Torrent struct?
 func (p *peerConnection) downloadMetadata() ([]byte, error) {
 	if p.metadataSize == 0 {
 		return nil, fmt.Errorf("metadata size is not set; cannot download metadata")

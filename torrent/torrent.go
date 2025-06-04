@@ -286,33 +286,21 @@ func (tr *Torrent) printProgress() {
 	log.Printf("(%.2f%%) downloaded %d piece(s) from %d peers\n", progress, tr.downloadedPieces, tr.peerConnectionPool.size())
 
 }
-
 // Starts the announcer routine for the Torrent instance.
-
-// This function periodically sends announce requests to the trackers associated
-// with the torrent to retrieve peer information. It runs in an interval defined
-// by `announceInterval` and handles concurrency for sending requests to multiple
-// trackers.
 //
-// The function uses a ticker to trigger periodic announce requests and listens
-// for a cancellation signal from the context (`tr.ctx.Done()`) to gracefully stop
-// the announcer. When stopping, it optionally allows for notifying trackers
-// about the stop event (currently marked as a TODO).
-//
-// Key Features:
-// - Runs announce requests at a fixed interval.
-// - Handles failed tracker requests gracefully by logging errors.
-// - Limits the number of concurrent requests to trackers using a semaphore.
-// - Sends retrieved peer information to the `incomingPeersCh` channel.
-//
-// Note: This function assumes that `tr.trackers.Entries()` provides a list of
-// tracker URLs and that `tr.sendAnnounceRequest(trackerUrl)` handles the actual
-// announce request logic, returning a list of peers or an error.
+// This routine periodically sends announce requests to all trackers associated with the Torrent.
+// It manages concurrent requests to trackers with a maximum concurrency limit, and dynamically
+// adjusts the announce interval based on tracker responses. The function listens for context
+// cancellation to gracefully stop announcing, and attempts to notify the Torrent of new peers
+// received from tracker responses. If an announce request fails, it logs the error for debugging.
+// The function ensures proper synchronization when updating the announce interval and cleans up
+// resources when stopped.
 func (tr *Torrent) startAnnouncer(ctx context.Context) {
-	// todo: make this function run in a proper interval interval
-	// todo: handle failed trackers
-	announceInterval := 3 * time.Second
-	ticker := time.NewTicker(announceInterval)
+	var intervalMu sync.Mutex
+
+	interval := 5 * time.Second
+	ticker := time.NewTicker(interval)
+
 	tr.updateStatus(connecting)
 
 	defer ticker.Stop()
@@ -328,33 +316,48 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 		case <-ticker.C:
 			{
 				var wg sync.WaitGroup
-
 				maxConcurrency := 5
 				sem := utils.NewSemaphore(maxConcurrency)
 
 				for trackerUrl := range tr.trackers.Entries() {
-					wg.Add(1)
-					sem.Acquire()
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
 
-					// todo: cancel any running goroutines
-					go func() {
+					sem.Acquire()
+					wg.Add(1)
+
+					go func(url string) {
 						defer sem.Release()
 						defer wg.Done()
 
-						peers, err := tr.sendAnnounceRequest(trackerUrl)
+						response, err := tr.sendAnnounceRequest(url)
 
 						if err != nil {
-							tr.logger.Debug(fmt.Sprintf("announce request failed: %v", err))
+							// todo: handle failed trackers
+							tr.logger.Debug(fmt.Sprintf("announce request failed for tracker '%s': %v", url, err))
 							return
 						}
 
-						tr.incomingPeersCh <- peers
-					}()
+						if announcedInterval := time.Second * time.Duration(response.interval); announcedInterval > interval {
+							intervalMu.Lock()
+							interval = announcedInterval
+							ticker.Reset(interval)
+							intervalMu.Unlock()
+						}
+
+						select {
+						case <-ctx.Done():
+							return
+
+						case tr.incomingPeersCh <- response.peers:
+						}
+					}(trackerUrl)
 				}
 
 				wg.Wait()
-				announceInterval = 5 * time.Minute
-				ticker.Reset(announceInterval)
 			}
 		}
 	}
