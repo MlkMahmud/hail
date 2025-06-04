@@ -216,7 +216,7 @@ func (tr *Torrent) sendHTTPAnnounceRequest(trackerURL string) (announceResponse,
 	params.Add("info_hash", string(tr.infoHash[:]))
 	params.Add("peer_id", string(tr.peerId[:]))
 	params.Add("port", "6881")
-	params.Add("downloaded", "0")
+	params.Add("downloaded", strconv.Itoa(tr.downloaded))
 	params.Add("uploaded", "0")
 	params.Add("left", strconv.Itoa(length))
 	params.Add("compact", "1")
@@ -327,7 +327,7 @@ func (tr *Torrent) sendUDPAnnounceRequest(trackerUrl string) (announceResponse, 
 	index += copy(reqBuffer[index:], tr.infoHash[:])
 	index += copy(reqBuffer[index:], tr.peerId[:])
 
-	binary.BigEndian.PutUint64(reqBuffer[index:], 0)
+	binary.BigEndian.PutUint64(reqBuffer[index:], uint64(tr.downloaded))
 	index += 8
 
 	binary.BigEndian.PutUint64(reqBuffer[index:], 0)
