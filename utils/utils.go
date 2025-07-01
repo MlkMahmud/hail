@@ -3,20 +3,9 @@ package utils
 import (
 	"errors"
 	"io"
-	"math/rand"
 	"net"
 	"os"
 	"time"
-)
-
-const (
-	defaultCharacterSet = "abcdefghijklmnopqrstuvwxyz" +
-		"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-)
-
-var (
-	seededRand *rand.Rand = rand.New(
-		rand.NewSource(time.Now().UnixNano()))
 )
 
 type RetryOptions[T any] struct {
@@ -65,19 +54,6 @@ func ConnWriteFull(conn net.Conn, buffer []byte, deadline time.Time) (int, error
 	return conn.Write(buffer)
 }
 
-func GenerateRandomString(length int, charset string) string {
-	if charset == "" {
-		charset = defaultCharacterSet
-	}
-
-	byteArr := make([]byte, length)
-
-	for i := range byteArr {
-		byteArr[i] = charset[seededRand.Intn(len(charset))]
-	}
-
-	return string(byteArr)
-}
 
 func Retry[T any](options RetryOptions[T]) (T, error) {
 	var res T

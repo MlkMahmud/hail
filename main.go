@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -9,7 +8,6 @@ import (
 	"syscall"
 
 	"github.com/MlkMahmud/hail/session"
-	"github.com/MlkMahmud/hail/utils"
 	"github.com/urfave/cli/v2"
 )
 
@@ -21,10 +19,7 @@ func handleDownload(ctx *cli.Context) error {
 	outputDir := ctx.String("output-dir")
 	src := ctx.String("torrent")
 
-	sessionId := [20]byte{}
-	copy(sessionId[:], fmt.Appendf(nil, "-HA001-%s", utils.GenerateRandomString(13, "")))
-
-	sesh := session.NewSession(sessionId, logger)
+	sesh := session.NewSession(session.SessionOpts{Logger: logger})
 
 	if err := sesh.AddTorrent(src, outputDir); err != nil {
 		return err

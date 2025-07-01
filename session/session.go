@@ -1,22 +1,44 @@
 package session
 
 import (
+	"crypto/sha1"
 	"fmt"
 	"log/slog"
+	"math/rand"
+	"time"
 
 	"github.com/MlkMahmud/hail/torrent"
 )
 
 type session struct {
-	id       [20]byte
+	id       [sha1.Size]byte
 	torrents map[string]*torrent.Torrent
 	logger   *slog.Logger
 }
 
-func NewSession(id [20]byte, logger *slog.Logger) *session {
+type SessionOpts struct {
+	Logger *slog.Logger
+}
+
+func generateSessionId() [sha1.Size]byte {
+	seededRand := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	byteArr := [sha1.Size]byte{}
+	charset := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+	index := copy(byteArr[:], []byte("-HA001-"))
+
+	for i := index; i < sha1.Size; i++ {
+		byteArr[i] = charset[seededRand.Intn(len(charset))]
+	}
+
+	return byteArr
+}
+
+func NewSession(opts SessionOpts) *session {
 	return &session{
-		id:       id,
-		logger:   logger,
+		id:       generateSessionId(),
+		logger:   opts.Logger,
 		torrents: map[string]*torrent.Torrent{},
 	}
 }
@@ -41,6 +63,10 @@ func (s *session) AddTorrent(src string, outputDir string) error {
 	tr.Start()
 
 	return nil
+}
+
+func (s *session) ID() string {
+	return string(s.id[:])
 }
 
 func (s *session) Stop() {
