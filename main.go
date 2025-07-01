@@ -25,11 +25,14 @@ func handleDownload(ctx *cli.Context) error {
 		return err
 	}
 
+	sesh.StartAllTorrents()
+
 	sigC := make(chan os.Signal, 1)
 	signal.Notify(sigC, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigC
-	sesh.Stop()
+
+	sesh.StopAllTorrents()
 
 	return nil
 }

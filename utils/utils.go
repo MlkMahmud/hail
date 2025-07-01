@@ -54,7 +54,6 @@ func ConnWriteFull(conn net.Conn, buffer []byte, deadline time.Time) (int, error
 	return conn.Write(buffer)
 }
 
-
 func Retry[T any](options RetryOptions[T]) (T, error) {
 	var res T
 	var err error

@@ -60,7 +60,6 @@ func (s *session) AddTorrent(src string, outputDir string) error {
 	}
 
 	s.torrents[tr.ID()] = tr
-	tr.Start()
 
 	return nil
 }
@@ -69,7 +68,13 @@ func (s *session) ID() string {
 	return string(s.id[:])
 }
 
-func (s *session) Stop() {
+func (s *session) StartAllTorrents() {
+	for _, tr := range s.torrents {
+		tr.Start()
+	}
+}
+
+func (s *session) StopAllTorrents() {
 	for _, tr := range s.torrents {
 		tr.Stop()
 	}
