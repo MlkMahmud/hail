@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/MlkMahmud/hail/bencode"
-	"github.com/MlkMahmud/hail/utils"
+	"github.com/MlkMahmud/hail/internal/bencode"
+	"github.com/MlkMahmud/hail/internal/utils"
 )
 
 type parsedFilesResult struct {

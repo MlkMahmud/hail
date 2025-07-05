@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MlkMahmud/hail/bencode"
+	"github.com/MlkMahmud/hail/internal/bencode"
 )
 
 type blockRequestResult struct {

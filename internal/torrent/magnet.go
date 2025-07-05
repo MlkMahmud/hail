@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/MlkMahmud/hail/utils"
+	"github.com/MlkMahmud/hail/internal/utils"
 )
 
 func parseInfoHashParameter(xtParameter string) ([sha1.Size]byte, error) {

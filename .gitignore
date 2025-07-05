@@ -1,4 +1,9 @@
-main
+# executable
+hail
+
 .DS_Store
+
 .vscode/
+
+# example torrent files
 *.torrent

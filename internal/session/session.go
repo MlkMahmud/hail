@@ -7,7 +7,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/MlkMahmud/hail/torrent"
+	"github.com/MlkMahmud/hail/internal/torrent"
 )
 
 type session struct {

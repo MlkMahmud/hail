@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MlkMahmud/hail/utils"
+	"github.com/MlkMahmud/hail/internal/utils"
 )
 
 // todo: gracefully drain connections

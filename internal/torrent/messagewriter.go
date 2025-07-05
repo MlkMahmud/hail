@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/MlkMahmud/hail/utils"
+	"github.com/MlkMahmud/hail/internal/utils"
 )
 
 type messageWriter struct {
