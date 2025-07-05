@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/MlkMahmud/hail/bencode"
+	"github.com/MlkMahmud/hail/internal/bencode"
 )
 
 func TestDecoder(t *testing.T) {
