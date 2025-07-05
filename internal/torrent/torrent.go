@@ -74,13 +74,15 @@ type Torrent struct {
 	downloadedPieces   int
 	maxPeerConnections int
 
-	peerId                      [20]byte
-	metadataDownloadCompleted   bool
 	metadataDownloadCompletedMu sync.Mutex
-	metadataPeersCh             chan *peerConnection
-	peerConnectionPool          *peerConnectionPool
-	outputDir                   string
-	status                      torrentStatus
+	statusMu                    sync.Mutex
+
+	peerId                    [20]byte
+	metadataDownloadCompleted bool
+	metadataPeersCh           chan *peerConnection
+	peerConnectionPool        *peerConnectionPool
+	outputDir                 string
+	status                    torrentStatus
 }
 
 func NewTorrent(opts NewTorrentOpts) (*Torrent, error) {
@@ -239,7 +241,6 @@ func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
 
 		case status := <-tr.statusCh:
 			{
-				tr.status = status
 				switch status {
 				case completed:
 					log.Print("torrent download has completed.")
@@ -286,6 +287,7 @@ func (tr *Torrent) printProgress() {
 	log.Printf("(%.2f%%) downloaded %d piece(s) from %d peers\n", progress, tr.downloadedPieces, tr.peerConnectionPool.size())
 
 }
+
 // Starts the announcer routine for the Torrent instance.
 //
 // This routine periodically sends announce requests to all trackers associated with the Torrent.
@@ -460,7 +462,6 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 	maxConcurrency := 5
 	sem := utils.NewSemaphore(maxConcurrency)
-	tr.updateStatus(downloading)
 
 	for {
 		select {
@@ -476,60 +477,64 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 				case <-ctx.Done():
 					sem.Release()
 					return
+
 				default:
 					if err != nil {
 						tr.logger.Debug(err.Error())
 						sem.Release()
-					} else {
-						go func(pc *peerConnection, tr *Torrent) {
-							defer sem.Release()
+						break
+					}
 
-							for {
-								select {
-								case <-ctx.Done():
-									{
+					tr.updateStatus(downloading)
+
+					go func(pc *peerConnection, tr *Torrent) {
+						defer sem.Release()
+
+						for {
+							select {
+							case <-ctx.Done():
+								{
+									return
+								}
+
+							case piece := <-tr.queuedPiecesCh:
+								{
+									if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: len(tr.info.pieces)}); err != nil {
+										tr.logger.Debug(err.Error())
+										tr.failedPiecesCh <- piece
+										tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
 										return
 									}
 
-								case piece := <-tr.queuedPiecesCh:
-									{
-										if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: len(tr.info.pieces)}); err != nil {
-											tr.logger.Debug(err.Error())
-											tr.failedPiecesCh <- piece
-											tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
-											return
-										}
+									downloadedPiece, err := pc.downloadPiece(piece)
 
-										downloadedPiece, err := pc.downloadPiece(piece)
-
-										if err != nil && pc.failedAttempts >= peerConnectionMaxFailedAttempts {
-											// todo: send to 'failedPeersCh"
-											tr.failedPiecesCh <- piece
-											tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
-											return
-										}
-
-										if err != nil {
-											tr.logger.Debug(err.Error())
-											pc.failedAttempts += 1
-											tr.failedPiecesCh <- piece
-											continue
-										}
-
-										if err := downloadedPiece.validateIntegrity(); err != nil {
-											// todo: implement hash fail threshold
-											tr.logger.Debug(err.Error())
-											pc.failedAttempts += 1
-											tr.failedPiecesCh <- piece
-											continue
-										}
-
-										tr.downloadedPieceCh <- *downloadedPiece
+									if err != nil && pc.failedAttempts >= peerConnectionMaxFailedAttempts {
+										// todo: send to 'failedPeersCh"
+										tr.failedPiecesCh <- piece
+										tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
+										return
 									}
+
+									if err != nil {
+										tr.logger.Debug(err.Error())
+										pc.failedAttempts += 1
+										tr.failedPiecesCh <- piece
+										continue
+									}
+
+									if err := downloadedPiece.validateIntegrity(); err != nil {
+										// todo: implement hash fail threshold
+										tr.logger.Debug(err.Error())
+										pc.failedAttempts += 1
+										tr.failedPiecesCh <- piece
+										continue
+									}
+
+									tr.downloadedPieceCh <- *downloadedPiece
 								}
 							}
-						}(conn, tr)
-					}
+						}
+					}(conn, tr)
 				}
 			}
 		}
@@ -610,7 +615,11 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 
 func (tr *Torrent) updateStatus(status torrentStatus) {
 	// todo: wrap status read op with mutex
+	tr.statusMu.Lock()
+	defer tr.statusMu.Unlock()
+
 	if tr.status != status {
+		tr.status = status
 		tr.statusCh <- status
 	}
 }

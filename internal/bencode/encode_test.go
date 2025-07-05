@@ -51,7 +51,7 @@ var expectedValues = []string{
 	"d4:listl3:onei2e5:three4:fiveee",
 }
 
-func TestEncoder(t *testing.T) {
+func TestBEncodeEncoder(t *testing.T) {
 	for index, value := range inputs {
 		t.Run(fmt.Sprintf("encode  %v", value), func(t *testing.T) {
 			encodedString, err := bencode.EncodeValue(value)

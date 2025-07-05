@@ -8,7 +8,7 @@ import (
 	"github.com/MlkMahmud/hail/internal/bencode"
 )
 
-func TestDecoder(t *testing.T) {
+func TestBEncodeDecoder(t *testing.T) {
 	inputs := map[string]any{
 		"i0e":                         0,
 		"i150e":                       150,
