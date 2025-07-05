@@ -1,6 +1,8 @@
 # executable
 hail
 
+!cmd/**
+
 .DS_Store
 
 .vscode/
