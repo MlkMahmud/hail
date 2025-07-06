@@ -80,17 +80,21 @@ func newPeerConnection(opts peerConnectionOpts) *peerConnection {
 }
 
 func (p *peerConnection) close() {
-	if p.conn != nil {
-		p.conn.Close()
-		p.conn = nil
-	}
-
 	if p.closeCh != nil {
 		select {
 		case <-p.closeCh:
+			p.logger.Debug(fmt.Sprintf("[%s]: peer connection \"closed\" channel was closed prematurely", p.remotePeerAddress))
+
 		default:
 			close(p.closeCh)
 		}
+	}
+
+	if p.conn != nil {
+		p.conn.Close()
+		p.conn = nil
+		p.reader = nil
+		p.writer = nil
 	}
 }
 
