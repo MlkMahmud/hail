@@ -74,10 +74,16 @@ func (mw *messageWriter) run(ctx context.Context) {
 			// todo: make deadlines configurable
 			err := mw.writeMessage(message, time.Now().Add(5*time.Second))
 
+			// only report the error if the context has not been cancelled.
 			if err != nil {
-				mw.errCh <- err
-				close(mw.errCh)
-				return
+				select {
+				case <-ctx.Done():
+					return
+
+				case mw.errCh <- err:
+					close(mw.errCh)
+					return
+				}
 			}
 		}
 	}

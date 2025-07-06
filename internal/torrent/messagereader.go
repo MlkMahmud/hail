@@ -84,10 +84,17 @@ func (mr *messageReader) run(ctx context.Context) {
 
 		default:
 			message, err := mr.readMessage()
+
+			// only report the error if the context has not been cancelled.
 			if err != nil {
-				mr.errCh <- err
-				close(mr.errCh)
-				return
+				select {
+				case <-ctx.Done():
+					return
+
+				case mr.errCh <- err:
+					close(mr.errCh)
+					return
+				}
 			}
 
 			if message.id == keepAliveMessageId {
