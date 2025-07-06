@@ -25,9 +25,7 @@
 Clone the repository and build the project:
 
 ```sh
-git clone https://github.com/MlkMahmud/hail.git
-cd hail
-go build -o hail
+git clone https://github.com/MlkMahmud/hail.git && cd hail && make
 ```
 
 ### Command-Line Interface

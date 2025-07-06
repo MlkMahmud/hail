@@ -36,6 +36,7 @@ const (
 	flushing
 	completed
 	stopped
+	errored
 )
 
 type NewTorrentOpts struct {
@@ -45,7 +46,6 @@ type NewTorrentOpts struct {
 	Src       string
 }
 
-// todo: use mutexes to wrap properties accessed by multiple goroutines
 type Torrent struct {
 	info *torrentInfo
 
@@ -55,6 +55,7 @@ type Torrent struct {
 
 	bannedPeersCh               chan string
 	downloadedPieceCh           chan downloadedPiece
+	errorCh                     chan error
 	failedPiecesCh              chan piece
 	incomingPeersCh             chan []peer
 	metadataDownloadCompletedCh chan struct{}
@@ -62,6 +63,8 @@ type Torrent struct {
 	queuedPiecesCh              chan piece
 	statusCh                    chan torrentStatus
 	stoppedCh                   chan struct{}
+
+	err error
 
 	bannedPeers     utils.Set
 	failingTrackers utils.Set
@@ -244,16 +247,25 @@ func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
 				switch status {
 				case completed:
 					log.Print("torrent download has completed.")
+
 				case connecting:
 					log.Print("connecting to peers...")
+
 				case downloading:
 					log.Print("downloading torrent files...")
+
 				case downloadingMetadata:
 					log.Print("downloading metadata...")
+
+				case errored:
+					log.Printf("torrent failed to download due to an error: %v", tr.err)
+
 				case finished:
 					log.Print("finished downloading all pieces")
+
 				case flushing:
 					log.Print("writing downloaded pieces to disk...")
+
 				case stopped:
 					log.Print("stopping torrent...")
 				}
@@ -553,11 +565,12 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 					file := tr.info.files[fileIndex]
 					fptr, err := file.openOrCreate(tr.outputDir)
 
-					//todo: handle error
 					if err != nil {
-						tr.logger.Debug(err.Error())
-						continue
+						tr.errorCh <- err
+						return
 					}
+
+					defer fptr.Close()
 
 					fileOffset := int64(((downloadedPiece.piece.index - file.pieceStartIndex) * tr.info.pieceLength) - file.startOffsetInFirstPiece)
 
@@ -583,20 +596,14 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 					}
 
 					if writeLen <= 0 {
-						// todo: this condition should never evaluate to true, if it does throw an error
-						tr.logger.Debug(
-							fmt.Sprintf("skipping write: calculated writeLen <= 0 for file %q (fileOffset=%d, pieceStartOffset=%d, pieceEndOffset=%d, file.length=%d, piece.index=%d)", file.name, fileOffset, pieceStartOffset, pieceEndOffset, file.length, downloadedPiece.piece.index),
-						)
-
-						continue
+						tr.errorCh <- fmt.Errorf("skipping write: calculated writeLen <= 0 for file %q (fileOffset=%d, pieceStartOffset=%d, pieceEndOffset=%d, file.length=%d, piece.index=%d)", file.name, fileOffset, pieceStartOffset, pieceEndOffset, file.length, downloadedPiece.piece.index)
+						return
 					}
 
 					if _, err := fptr.WriteAt(downloadedPiece.data[pieceStartOffset:pieceStartOffset+writeLen], fileOffset); err != nil {
-						// todo: properly handle this error
-						tr.logger.Debug(err.Error())
+						tr.errorCh <- err
+						return
 					}
-
-					fptr.Close()
 				}
 
 				tr.downloaded += downloadedPiece.piece.length
@@ -614,7 +621,6 @@ func (tr *Torrent) startPieceWriter(ctx context.Context) {
 }
 
 func (tr *Torrent) updateStatus(status torrentStatus) {
-	// todo: wrap status read op with mutex
 	tr.statusMu.Lock()
 	defer tr.statusMu.Unlock()
 
@@ -648,6 +654,10 @@ func (t *Torrent) Start() {
 
 	t.downloaded = 0
 	t.downloadedPieces = 0
+
+	t.err = nil
+	t.errorCh = make(chan error, 1)
+
 	t.stoppedCh = make(chan struct{}, 1)
 
 	go t.handleStatusUpdate(ctx)
@@ -658,6 +668,11 @@ func (t *Torrent) Start() {
 	go t.startMetadataDownloader(ctx)
 
 	select {
+	case err := <-t.errorCh:
+		t.err = err
+		shutdownFn(errored)
+		return
+
 	case <-t.stoppedCh:
 		shutdownFn(stopped)
 		return
@@ -669,6 +684,11 @@ func (t *Torrent) Start() {
 	}
 
 	select {
+	case err := <-t.errorCh:
+		t.err = err
+		shutdownFn(errored)
+		return
+
 	case <-t.stoppedCh:
 		shutdownFn(stopped)
 
