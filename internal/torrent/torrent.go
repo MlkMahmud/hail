@@ -53,7 +53,6 @@ type Torrent struct {
 
 	logger *slog.Logger
 
-	bannedPeersCh               chan string
 	downloadedPieceCh           chan downloadedPiece
 	errorCh                     chan error
 	failedPiecesCh              chan piece
@@ -66,11 +65,8 @@ type Torrent struct {
 
 	err error
 
-	bannedPeers     utils.Set
-	failingTrackers utils.Set
 	trackers        utils.Set
 
-	failingPeers map[string]peer
 	peers        map[string]peer
 
 	downloaded         int
@@ -175,22 +171,6 @@ func (tr *Torrent) enqueuePieces(ctx context.Context) {
 			return
 		case failedPiece := <-tr.failedPiecesCh:
 			tr.queuedPiecesCh <- failedPiece
-		}
-	}
-}
-
-// Blacklists peers that have experienced multiple piece hash verifications.
-func (tr *Torrent) handleBannedPeers(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			{
-				return
-			}
-		case bannedPeerAddress := <-tr.bannedPeersCh:
-			{
-				tr.bannedPeers.Add(bannedPeerAddress)
-			}
 		}
 	}
 }
@@ -664,7 +644,6 @@ func (t *Torrent) Start() {
 
 	go t.startAnnouncer(ctx)
 	go t.handleIncomingPeers(ctx)
-	go t.handleBannedPeers(ctx)
 	go t.startMetadataDownloader(ctx)
 
 	select {

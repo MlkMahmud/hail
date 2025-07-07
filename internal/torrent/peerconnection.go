@@ -26,7 +26,6 @@ type peerConnection struct {
 	closeCh            chan struct{}
 	conn               net.Conn
 	failedAttempts     int
-	hashFails          int
 	infoHash           [sha1.Size]byte
 	logger             *slog.Logger
 	metadataSize       int
@@ -502,10 +501,6 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 		return fmt.Errorf("failed to initialize peer connection: %w", err)
 	}
 
-	if conn == nil {
-		return fmt.Errorf("unexpected nil connection returned by DialTimeout")
-	}
-
 	p.conn = conn
 	p.bitfield = make([]bool, config.bitfieldSize)
 	p.bitfieldReadyCh = make(chan struct{}, 1)
@@ -703,7 +698,6 @@ func (p *peerConnection) sendRequestMessage(blk block, resultsQueue chan blockRe
 	}
 }
 
-// todo: add metadata size to request payload if you have it.
 func (p *peerConnection) sendExtensionHandshake() error {
 	if !p.supportsExtensions {
 		return nil

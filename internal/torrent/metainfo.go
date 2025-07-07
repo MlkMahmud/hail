@@ -296,7 +296,6 @@ func newTorrentFromMetainfoFile(data []byte, opts NewTorrentOpts) (*Torrent, err
 	torrent.metadataPeersCh = make(chan *peerConnection, 10)
 	torrent.peerConnectionPool = newPeerConnectionPool()
 	torrent.peers = make(map[string]peer)
-	torrent.failingPeers = make(map[string]peer)
 
 	torrent.downloadedPieceCh = make(chan downloadedPiece, 10)
 	torrent.failedPiecesCh = make(chan piece, 10)

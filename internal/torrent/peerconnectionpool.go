@@ -9,7 +9,7 @@ import (
 	"github.com/MlkMahmud/hail/internal/utils"
 )
 
-// todo: gracefully drain connections
+
 
 type peerConnectionPool struct {
 	activeConnectionIds utils.Set
