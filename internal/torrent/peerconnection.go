@@ -82,7 +82,7 @@ func (p *peerConnection) close() {
 	if p.closeCh != nil {
 		select {
 		case <-p.closeCh:
-			p.logger.Debug(fmt.Sprintf("[%s]: peer connection \"closed\" channel was closed prematurely", p.remotePeerAddress))
+			p.logger.Debug(fmt.Sprintf("[%s]: peer connection has been closed already", p.remotePeerAddress))
 
 		default:
 			close(p.closeCh)
@@ -91,10 +91,12 @@ func (p *peerConnection) close() {
 
 	if p.conn != nil {
 		p.conn.Close()
-		p.conn = nil
-		p.reader = nil
-		p.writer = nil
 	}
+
+	p.closeCh = nil
+	p.conn = nil
+	p.reader = nil
+	p.writer = nil
 }
 
 func (p *peerConnection) deleteRequest(key string) {
@@ -526,7 +528,6 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 		}
 
 		cancelFunc()
-		p.close()
 	}
 
 	if err := p.initiateHandshake(); err != nil {
