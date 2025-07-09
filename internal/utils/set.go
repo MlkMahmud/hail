@@ -18,14 +18,15 @@ func (s *Set) Entries() map[string]struct{} {
 	return s.entries
 }
 
+func (s *Set) Has(entry string) bool {
+	_, exists := s.entries[entry]
+	return exists
+}
+
 func (s *Set) Remove(entry string) {
 	delete(s.entries, entry)
 }
 
-func (s *Set) Contains(entry string) bool {
-	_, exists := s.entries[entry]
-	return exists
-}
 
 func (s *Set) Size() int {
 	return len(s.entries)

@@ -291,11 +291,12 @@ func newTorrentFromMetainfoFile(data []byte, opts NewTorrentOpts) (*Torrent, err
 	torrent.metadataDownloadCompletedCh = make(chan struct{}, 1)
 	torrent.piecesDownloadCompleteCh = make(chan struct{}, 1)
 
-	torrent.incomingPeersCh = make(chan []peer, 1)
+	torrent.incomingPeersCh = make(chan []*peer, 1)
 	torrent.maxPeerConnections = 10
-	torrent.metadataPeersCh = make(chan *peerConnection, 10)
-	torrent.peerConnectionPool = newPeerConnectionPool()
-	torrent.peers = make(map[string]peer)
+	torrent.metadataPeersCh = make(chan *peer, 5)
+
+	torrent.activePeerIds = *utils.NewSet()
+	torrent.peers = make(map[string]*peer)
 
 	torrent.downloadedPieceCh = make(chan downloadedPiece, 10)
 	torrent.failedPiecesCh = make(chan piece, 10)

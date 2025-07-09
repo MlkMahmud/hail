@@ -47,10 +47,10 @@ type peerConnectionInitConfig struct {
 }
 
 type peerConnectionOpts struct {
-	infoHash   [sha1.Size]byte
-	logger     *slog.Logger
-	peerId     [20]byte
-	remotePeer peer
+	infoHash          [sha1.Size]byte
+	logger            *slog.Logger
+	peerId            [20]byte
+	remotePeerAddress string
 }
 
 const (
@@ -72,7 +72,7 @@ func newPeerConnection(opts peerConnectionOpts) *peerConnection {
 	return &peerConnection{
 		infoHash:          opts.infoHash,
 		logger:            opts.logger,
-		remotePeerAddress: fmt.Sprintf("%s:%d", opts.remotePeer.ipAddress, opts.remotePeer.port),
+		remotePeerAddress: opts.remotePeerAddress,
 		peerId:            opts.peerId,
 		pendingRequests:   map[string]*messageRequest{},
 	}

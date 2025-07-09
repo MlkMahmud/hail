@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -56,7 +57,8 @@ type Torrent struct {
 	downloadedPieceCh           chan downloadedPiece
 	errorCh                     chan error
 	failedPiecesCh              chan piece
-	incomingPeersCh             chan []peer
+	incomingPeersCh             chan []*peer
+	metadataPeersCh             chan *peer
 	metadataDownloadCompletedCh chan struct{}
 	piecesDownloadCompleteCh    chan struct{}
 	queuedPiecesCh              chan piece
@@ -65,21 +67,21 @@ type Torrent struct {
 
 	err error
 
-	trackers        utils.Set
+	activePeerIds utils.Set
+	trackers      utils.Set
 
-	peers        map[string]peer
+	peers map[string]*peer
 
 	downloaded         int
 	downloadedPieces   int
 	maxPeerConnections int
 
 	metadataDownloadCompletedMu sync.Mutex
+	peersMu                     sync.Mutex
 	statusMu                    sync.Mutex
 
 	peerId                    [20]byte
 	metadataDownloadCompleted bool
-	metadataPeersCh           chan *peerConnection
-	peerConnectionPool        *peerConnectionPool
 	outputDir                 string
 	status                    torrentStatus
 }
@@ -185,28 +187,19 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 		case peers := <-tr.incomingPeersCh:
 			{
 				for _, peer := range peers {
-					if _, ok := tr.peerConnectionPool.connections[peer.String()]; ok {
+					if _, ok := tr.peers[peer.ipAddress]; ok {
 						continue
 					}
 
-					pc := newPeerConnection(peerConnectionOpts{
-						infoHash:   tr.infoHash,
-						logger:     tr.logger,
-						peerId:     tr.peerId,
-						remotePeer: peer,
-					})
-
-					// todo: place a limit on the number of idle peers
-					tr.peers[peer.String()] = peer
-
-					if tr.peerConnectionPool.size() < tr.maxPeerConnections {
-						tr.peerConnectionPool.addConnection(pc)
+					// todo: make max number of peers configurable
+					if tr.numOfPeers() <= 30 {
+						tr.addPeer(peer)
 					}
 
 					select {
 					case <-tr.metadataDownloadCompletedCh:
 						continue
-					case tr.metadataPeersCh <- pc:
+					case tr.metadataPeersCh <- peer:
 					}
 				}
 			}
@@ -276,8 +269,7 @@ func (tr *Torrent) printProgress() {
 		progress = float64(tr.downloaded) / float64(tr.info.length) * 100
 	}
 
-	log.Printf("(%.2f%%) downloaded %d piece(s) from %d peers\n", progress, tr.downloadedPieces, tr.peerConnectionPool.size())
-
+	log.Printf("(%.2f%%) downloaded %d piece(s) from %d peers\n", progress, tr.downloadedPieces, tr.activePeerIds.Size())
 }
 
 // Starts the announcer routine for the Torrent instance.
@@ -390,8 +382,15 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 		case <-ctx.Done():
 			return
 
-		case pc := <-tr.metadataPeersCh:
+		case pr := <-tr.metadataPeersCh:
 			{
+				pc := newPeerConnection(peerConnectionOpts{
+					infoHash:          tr.infoHash,
+					logger:            tr.logger,
+					peerId:            tr.peerId,
+					remotePeerAddress: pr.String(),
+				})
+
 				if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: 0}); err != nil {
 					tr.logger.Debug(err.Error())
 					break
@@ -451,6 +450,7 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 	}
 }
 
+// todo: reduce function complexity
 func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 	maxConcurrency := 5
 	sem := utils.NewSemaphore(maxConcurrency)
@@ -463,7 +463,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 		default:
 			{
 				sem.Acquire()
-				conn, err := tr.peerConnectionPool.getIdleConnection(ctx)
+				pr, err := tr.getIdlePeer()
 
 				select {
 				case <-ctx.Done():
@@ -471,6 +471,13 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 					return
 
 				default:
+					if errors.Is(err, errNoIdlePeers) {
+						// todo: request for more peers from trackers
+						time.Sleep(2 * time.Second)
+						sem.Release()
+						break
+					}
+
 					if err != nil {
 						tr.logger.Debug(err.Error())
 						sem.Release()
@@ -479,8 +486,23 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 
 					tr.updateStatus(downloading)
 
-					go func(pc *peerConnection, tr *Torrent) {
+					go func(p *peer, tr *Torrent) {
 						defer sem.Release()
+
+						pc := newPeerConnection(peerConnectionOpts{
+							infoHash:          tr.infoHash,
+							logger:            tr.logger,
+							peerId:            tr.peerId,
+							remotePeerAddress: p.String(),
+						})
+
+						if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: len(tr.info.pieces)}); err != nil {
+							tr.logger.Debug(err.Error())
+							tr.removePeer(pc.remotePeerAddress)
+							return
+						}
+
+						defer pc.close()
 
 						for {
 							select {
@@ -491,19 +513,12 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 
 							case piece := <-tr.queuedPiecesCh:
 								{
-									if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: len(tr.info.pieces)}); err != nil {
-										tr.logger.Debug(err.Error())
-										tr.failedPiecesCh <- piece
-										tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
-										return
-									}
-
 									downloadedPiece, err := pc.downloadPiece(piece)
 
 									if err != nil && pc.failedAttempts >= peerConnectionMaxFailedAttempts {
 										// todo: send to 'failedPeersCh"
 										tr.failedPiecesCh <- piece
-										tr.peerConnectionPool.removeConnection(pc.remotePeerAddress)
+										tr.removePeer(pc.remotePeerAddress)
 										return
 									}
 
@@ -526,7 +541,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 								}
 							}
 						}
-					}(conn, tr)
+					}(pr, tr)
 				}
 			}
 		}
@@ -629,7 +644,6 @@ func (t *Torrent) Start() {
 		t.updateStatus(status)
 		cancelDownloader()
 		cancelCtx()
-		t.peerConnectionPool.closeConnections()
 	}
 
 	t.downloaded = 0
@@ -644,6 +658,8 @@ func (t *Torrent) Start() {
 
 	go t.startAnnouncer(ctx)
 	go t.handleIncomingPeers(ctx)
+
+	// todo: trigger this routine when we first connect to a tracker and receive a list of peers
 	go t.startMetadataDownloader(ctx)
 
 	select {

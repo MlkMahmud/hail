@@ -19,7 +19,7 @@ import (
 
 type announceResponse struct {
 	interval int
-	peers    []peer
+	peers    []*peer
 }
 
 type UDPTrackerActionId int
@@ -94,12 +94,12 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) (announceResponse, error
 			}
 
 			numOfPeers := peersStringLen / peerSize
-			peersArr := make([]peer, numOfPeers)
+			peersArr := make([]*peer, numOfPeers)
 
 			for i, j := 0, 0; i < peersStringLen; i += peerSize {
 				ipAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
 				port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
-				peersArr[j] = peer{ipAddress: ipAddress, port: port}
+				peersArr[j] = &peer{ipAddress: ipAddress, port: port}
 				j++
 			}
 
@@ -110,7 +110,7 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) (announceResponse, error
 		}
 	case []any:
 		{
-			peersArr := make([]peer, len(peersValue))
+			peersArr := make([]*peer, len(peersValue))
 
 			for index, pe := range peersValue {
 				peerDict, ok := pe.(map[string]any)
@@ -132,7 +132,7 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) (announceResponse, error
 					}
 				}
 
-				peersArr[index] = peer{
+				peersArr[index] = &peer{
 					ipAddress: peerDict["ip"].(string),
 					port:      uint16(peerDict["port"].(int)),
 				}
@@ -190,12 +190,12 @@ func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, tran
 	}
 
 	numOfPeers := peersBufferSize / peerSize
-	peersArr := make([]peer, numOfPeers)
+	peersArr := make([]*peer, numOfPeers)
 
 	for i, j := 0, 0; i < peersBufferSize; i += peerSize {
 		ipAddress := fmt.Sprintf("%d.%d.%d.%d", peersBuffer[i], peersBuffer[i+1], peersBuffer[i+2], peersBuffer[i+3])
 		port := binary.BigEndian.Uint16(peersBuffer[i+4:])
-		peersArr[j] = peer{ipAddress: ipAddress, port: port}
+		peersArr[j] = &peer{ipAddress: ipAddress, port: port}
 		j++
 	}
 
