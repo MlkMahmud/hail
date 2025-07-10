@@ -54,16 +54,23 @@ type Torrent struct {
 
 	logger *slog.Logger
 
-	downloadedPieceCh           chan downloadedPiece
-	errorCh                     chan error
-	failedPiecesCh              chan piece
-	incomingPeersCh             chan []*peer
+	downloadedPieceCh chan downloadedPiece
+	errorCh           chan error
+	failedPiecesCh    chan piece
+	incomingPeersCh   chan []*peer
+
+	// Channel to signal the initial discovery of peers
+	initialPeersDiscoveredCh chan struct{}
+	// Ensures the "initialPeersDiscovered" channel is closed once
+	initialPeersDiscoveredOnce sync.Once
+
 	metadataPeersCh             chan *peer
 	metadataDownloadCompletedCh chan struct{}
 	piecesDownloadCompleteCh    chan struct{}
 	queuedPiecesCh              chan piece
-	statusCh                    chan torrentStatus
-	stoppedCh                   chan struct{}
+
+	statusCh  chan torrentStatus
+	stoppedCh chan struct{}
 
 	err error
 
@@ -195,6 +202,10 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 					if tr.numOfPeers() <= 30 {
 						tr.addPeer(peer)
 					}
+
+					tr.initialPeersDiscoveredOnce.Do(func() {
+						close(tr.initialPeersDiscoveredCh)
+					})
 
 					select {
 					case <-tr.metadataDownloadCompletedCh:
@@ -637,10 +648,19 @@ func (tr *Torrent) ID() string {
 // process. The function uses context objects to manage the cancellation of
 // goroutines and ensures proper cleanup of resources upon shutdown.
 func (t *Torrent) Start() {
+	if t.status != initializing && t.status != stopped {
+		t.logger.Debug(fmt.Sprintf("[%s]: torrent is already running", t.ID()))
+		return
+	}
+
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	downloaderCtx, cancelDownloader := context.WithCancel(ctx)
 
-	shutdownFn := func(status torrentStatus) {
+	shutdownFn := func(status torrentStatus, err error) {
+		if err != nil {
+			t.err = err
+		}
+
 		t.updateStatus(status)
 		cancelDownloader()
 		cancelCtx()
@@ -652,24 +672,35 @@ func (t *Torrent) Start() {
 	t.err = nil
 	t.errorCh = make(chan error, 1)
 
+	t.initialPeersDiscoveredCh = make(chan struct{}, 1)
+	t.initialPeersDiscoveredOnce = sync.Once{}
+
 	t.stoppedCh = make(chan struct{}, 1)
 
-	go t.handleStatusUpdate(ctx)
-
 	go t.startAnnouncer(ctx)
+	go t.handleStatusUpdate(ctx)
 	go t.handleIncomingPeers(ctx)
-
-	// todo: trigger this routine when we first connect to a tracker and receive a list of peers
-	go t.startMetadataDownloader(ctx)
 
 	select {
 	case err := <-t.errorCh:
-		t.err = err
-		shutdownFn(errored)
+		shutdownFn(errored, err)
 		return
 
 	case <-t.stoppedCh:
-		shutdownFn(stopped)
+		shutdownFn(stopped, nil)
+		return
+
+	case <-t.initialPeersDiscoveredCh:
+		go t.startMetadataDownloader(ctx)
+	}
+
+	select {
+	case err := <-t.errorCh:
+		shutdownFn(errored, err)
+		return
+
+	case <-t.stoppedCh:
+		shutdownFn(stopped, nil)
 		return
 
 	case <-t.metadataDownloadCompletedCh:
@@ -680,15 +711,14 @@ func (t *Torrent) Start() {
 
 	select {
 	case err := <-t.errorCh:
-		t.err = err
-		shutdownFn(errored)
+		shutdownFn(errored, err)
 		return
 
 	case <-t.stoppedCh:
-		shutdownFn(stopped)
+		shutdownFn(stopped, nil)
 
 	case <-t.piecesDownloadCompleteCh:
-		shutdownFn(completed)
+		shutdownFn(completed, nil)
 	}
 }
 

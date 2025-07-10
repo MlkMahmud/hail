@@ -74,13 +74,13 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) (announceResponse, error
 	interval, ok := dict["interval"].(int)
 
 	if !ok {
-		return announceResponse{}, fmt.Errorf("decoded response does not include a valid \"interval\" key")
+		return announceResponse{}, fmt.Errorf("announce response is missing required \"interval\" property")
 	}
 
 	peers, exists := dict["peers"]
 
 	if !exists {
-		return announceResponse{}, fmt.Errorf("decoded response does not include a \"peers\" key")
+		return announceResponse{}, fmt.Errorf("announce response is missing required \"peers\" property")
 	}
 
 	switch peersValue := peers.(type) {
