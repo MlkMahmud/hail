@@ -99,7 +99,12 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) (announceResponse, error
 			for i, j := 0, 0; i < peersStringLen; i += peerSize {
 				ipAddress := fmt.Sprintf("%d.%d.%d.%d", byte(peersValue[i]), byte(peersValue[i+1]), byte(peersValue[i+2]), byte(peersValue[i+3]))
 				port := binary.BigEndian.Uint16([]byte(peersValue[i+4 : i+6]))
-				peersArr[j] = &peer{ipAddress: ipAddress, port: port}
+				peersArr[j] = &peer{
+					ipAddress: ipAddress,
+					isBusy:    false,
+					port:      port,
+					socket:    fmt.Sprintf("%s:%d", ipAddress, port),
+				}
 				j++
 			}
 
@@ -132,9 +137,14 @@ func (t *Torrent) parseHTTPAnnounceResponse(res []byte) (announceResponse, error
 					}
 				}
 
+				ipAddress := peerDict["ip"].(string)
+				port := uint16(peerDict["port"].(int))
+
 				peersArr[index] = &peer{
-					ipAddress: peerDict["ip"].(string),
-					port:      uint16(peerDict["port"].(int)),
+					ipAddress: ipAddress,
+					isBusy:    false,
+					port:      port,
+					socket:    fmt.Sprintf("%s:%d", ipAddress, port),
 				}
 			}
 
@@ -195,7 +205,13 @@ func (tr *Torrent) parseUDPAnnounceResponse(response []byte, action uint32, tran
 	for i, j := 0, 0; i < peersBufferSize; i += peerSize {
 		ipAddress := fmt.Sprintf("%d.%d.%d.%d", peersBuffer[i], peersBuffer[i+1], peersBuffer[i+2], peersBuffer[i+3])
 		port := binary.BigEndian.Uint16(peersBuffer[i+4:])
-		peersArr[j] = &peer{ipAddress: ipAddress, port: port}
+		peersArr[j] = &peer{
+			ipAddress: ipAddress,
+			isBusy:    false,
+			port:      port,
+			socket:    fmt.Sprintf("%s:%d", ipAddress, port),
+		}
+
 		j++
 	}
 

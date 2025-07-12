@@ -33,7 +33,7 @@ type peerConnection struct {
 	peerId             [20]byte
 	pendingRequests    map[string]*messageRequest
 	pendingRequestsMu  sync.Mutex
-	remotePeerAddress  string
+	remotePeerSocket   string
 	remotePeerId       [20]byte
 	reader             *messageReader
 	supportsExtensions bool
@@ -47,10 +47,10 @@ type peerConnectionInitConfig struct {
 }
 
 type peerConnectionOpts struct {
-	infoHash          [sha1.Size]byte
-	logger            *slog.Logger
-	peerId            [20]byte
-	remotePeerAddress string
+	infoHash         [sha1.Size]byte
+	logger           *slog.Logger
+	peerId           [20]byte
+	remotePeerSocket string
 }
 
 const (
@@ -70,11 +70,11 @@ const (
 
 func newPeerConnection(opts peerConnectionOpts) *peerConnection {
 	return &peerConnection{
-		infoHash:          opts.infoHash,
-		logger:            opts.logger,
-		remotePeerAddress: opts.remotePeerAddress,
-		peerId:            opts.peerId,
-		pendingRequests:   map[string]*messageRequest{},
+		infoHash:         opts.infoHash,
+		logger:           opts.logger,
+		remotePeerSocket: opts.remotePeerSocket,
+		peerId:           opts.peerId,
+		pendingRequests:  map[string]*messageRequest{},
 	}
 }
 
@@ -82,7 +82,7 @@ func (p *peerConnection) close() {
 	if p.closeCh != nil {
 		select {
 		case <-p.closeCh:
-			p.logger.Debug(fmt.Sprintf("[%s]: peer connection has been closed already", p.remotePeerAddress))
+			p.logger.Debug(fmt.Sprintf("[%s]: peer connection has been closed already", p.remotePeerSocket))
 
 		default:
 			close(p.closeCh)
@@ -145,7 +145,7 @@ func (p *peerConnection) downloadPiece(piece piece) (*downloadedPiece, error) {
 
 	if !p.hasPiece(piece.index) {
 		// todo: create custom error so caller can handle it differently
-		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.remotePeerAddress, piece.index)
+		return nil, fmt.Errorf("peer %s does not have piece at index %d", p.remotePeerSocket, piece.index)
 	}
 
 	if err := p.sendInterestedMessage(); err != nil {
@@ -346,68 +346,62 @@ func (p *peerConnection) handleExtensionMessage(msg message) error {
 }
 
 func (p *peerConnection) handleMetadataExtensionMessage(payload []byte) error {
-	var err error
-	var key string
-	var response []byte
+	onExit := func(key string, response []byte, err error) {
+		if key == "" {
+			return
+		}
 
-	defer p.respondToRequest(key, response, err)
+		p.respondToRequest(key, response, err)
+	}
 
 	if len(payload) == 0 {
-		err = fmt.Errorf("metadata response payload is empty")
-		return err
+		onExit("", nil, nil)
+		return fmt.Errorf("ut_metadata response payload is empty")
 	}
 
 	if receivedId := int(payload[0]); receivedId != int(utMetadataId) {
-		err = fmt.Errorf("expected \"%s\" extension Id to be %d, but received %d", utMetadata, utMetadataId, receivedId)
-		return err
+		onExit("", nil, nil)
+		return fmt.Errorf("expected \"%s\" extension Id to be %d, but received %d", utMetadata, utMetadataId, receivedId)
 	}
 
 	decoded, nextCharIndex, decodeErr := bencode.DecodeValue(payload[1:])
 	if decodeErr != nil {
-		err = fmt.Errorf("failed to decode metadata response payload: %w", decodeErr)
-		return err
+		onExit("", nil, nil)
+		return fmt.Errorf("failed to decode ut_metadata response payload: %w", decodeErr)
 	}
 
 	dict, ok := decoded.(map[string]any)
 	if !ok {
-		err = fmt.Errorf("expected decoded metadata response to be a dictionary, but received %v", dict)
-		return err
+		onExit("", nil, nil)
+		return fmt.Errorf("expected decoded ut_metadata response to be a dictionary, but received %v", dict)
 	}
 
 	// Parse piece index for request key
 	pieceIndex, ok := dict["piece"].(int)
+
 	if !ok {
-		err = fmt.Errorf("expected \"piece\" key to be an integer, but received %v", dict["piece"])
-		return err
+		onExit("", nil, nil)
+		return fmt.Errorf("expected \"piece\" key to be an integer, but received %v", dict["piece"])
 	}
 
-	key = fmt.Sprintf("metadata-piece-request-%d", pieceIndex)
+	key := fmt.Sprintf("metadata-piece-request-%d", pieceIndex)
 
 	if dict["msg_type"] == int(extMsgReject) {
-		err = fmt.Errorf("peer does not have the piece of metadata that was requested")
+		err := fmt.Errorf("peer does not have the piece of metadata that was requested")
+		onExit(key, nil, err)
 		return err
 	}
 
 	if dict["msg_type"] != int(extMsgData) {
-		err = fmt.Errorf("expected \"msg_type\" key to have value %d, but got %v", int(extMsgData), dict["msg_type"])
-		return err
-	}
-
-	pieceSize, ok := dict["total_size"].(int)
-	if !ok {
-		err = fmt.Errorf("expected \"total_size\" key to be an integer, but received %v", dict["total_size"])
+		err := fmt.Errorf("expected \"msg_type\" key to have value %d, but got %v", int(extMsgData), dict["msg_type"])
+		onExit(key, nil, err)
 		return err
 	}
 
 	metadataPieceStartIndex := nextCharIndex + 1 // add one to account for the first byte (the extension Id)
 	metadataPiece := payload[metadataPieceStartIndex:]
 
-	if receivedPieceSize := len(metadataPiece); receivedPieceSize != pieceSize {
-		err = fmt.Errorf("expected metadata piece to have length %d, but received %d", pieceSize, receivedPieceSize)
-		return err
-	}
-
-	response = metadataPiece
+	onExit(key, metadataPiece, nil)
 	return nil
 }
 
@@ -497,7 +491,7 @@ func (p *peerConnection) initConnection(config peerConnectionInitConfig) error {
 		return nil
 	}
 
-	conn, err := net.DialTimeout("tcp", p.remotePeerAddress, config.dialTimeout)
+	conn, err := net.DialTimeout("tcp", p.remotePeerSocket, config.dialTimeout)
 
 	if err != nil {
 		return fmt.Errorf("failed to initialize peer connection: %w", err)
@@ -668,11 +662,11 @@ func (p *peerConnection) sendRequestMessage(blk block, resultsQueue chan blockRe
 
 		select {
 		case err := <-req.errorCh:
-			mainError = fmt.Errorf("failed to send 'Request' message to peer at address %s for block (pieceIndex: %d, begin: %d, length: %d): %w", p.remotePeerAddress, blk.pieceIndex, blk.begin, blk.length, err)
+			mainError = fmt.Errorf("failed to send 'Request' message to peer at address %s for block (pieceIndex: %d, begin: %d, length: %d): %w", p.remotePeerSocket, blk.pieceIndex, blk.begin, blk.length, err)
 			continue
 
 		case <-time.After(5 * time.Second):
-			mainError = fmt.Errorf("timed out waiting for block response from peer at address %s for block (pieceIndex: %d, begin: %d, length: %d)", p.remotePeerAddress, blk.pieceIndex, blk.begin, blk.length)
+			mainError = fmt.Errorf("timed out waiting for block response from peer at address %s for block (pieceIndex: %d, begin: %d, length: %d)", p.remotePeerSocket, blk.pieceIndex, blk.begin, blk.length)
 			continue
 
 		case data := <-req.responseCh:
@@ -741,7 +735,7 @@ func (p *peerConnection) sendExtensionHandshake() error {
 	case <-req.responseCh:
 		return nil
 	case <-time.After(5 * time.Second):
-		return fmt.Errorf("timed out waiting for extension handshake response from peer: %s", p.remotePeerAddress)
+		return fmt.Errorf("timed out waiting for extension handshake response from peer: %s", p.remotePeerSocket)
 	}
 }
 
@@ -765,7 +759,7 @@ func (p *peerConnection) sendInterestedMessage() error {
 	case <-req.responseCh:
 		return nil
 	case <-time.After(5 * time.Second):
-		return fmt.Errorf("timed out waiting for \"%s\" message from peer: %s", unchokeMessageId, p.remotePeerAddress)
+		return fmt.Errorf("timed out waiting for \"%s\" message from peer: %s", unchokeMessageId, p.remotePeerSocket)
 	}
 }
 
@@ -820,10 +814,7 @@ func (p *peerConnection) sendMetadataPieceRequest(pieceIndex int) ([]byte, error
 	extensionMessageIdLength := 1
 	messagePayloadBuffer := make([]byte, extensionMessageIdLength+len(bencodedString))
 
-	index := 0
-	messagePayloadBuffer[index] = byte(p.peerExtensions[utMetadata])
-
-	index += 1
+	index := copy(messagePayloadBuffer, []byte{p.peerExtensions[utMetadata]})
 	copy(messagePayloadBuffer[index:], []byte(bencodedString))
 
 	req, err := p.sendMessage(key, message{id: extensionMessageId, payload: messagePayloadBuffer})

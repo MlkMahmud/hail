@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -64,7 +63,6 @@ type Torrent struct {
 	// Ensures the "initialPeersDiscovered" channel is closed once
 	initialPeersDiscoveredOnce sync.Once
 
-	metadataPeersCh             chan *peer
 	metadataDownloadCompletedCh chan struct{}
 	piecesDownloadCompleteCh    chan struct{}
 	queuedPiecesCh              chan piece
@@ -83,14 +81,12 @@ type Torrent struct {
 	downloadedPieces   int
 	maxPeerConnections int
 
-	metadataDownloadCompletedMu sync.Mutex
-	peersMu                     sync.Mutex
-	statusMu                    sync.Mutex
+	peersMu  sync.Mutex
+	statusMu sync.Mutex
 
-	peerId                    [20]byte
-	metadataDownloadCompleted bool
-	outputDir                 string
-	status                    torrentStatus
+	peerId    [20]byte
+	outputDir string
+	status    torrentStatus
 }
 
 func NewTorrent(opts NewTorrentOpts) (*Torrent, error) {
@@ -206,12 +202,6 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 					tr.initialPeersDiscoveredOnce.Do(func() {
 						close(tr.initialPeersDiscoveredCh)
 					})
-
-					select {
-					case <-tr.metadataDownloadCompletedCh:
-						continue
-					case tr.metadataPeersCh <- peer:
-					}
 				}
 			}
 		}
@@ -256,20 +246,6 @@ func (tr *Torrent) handleStatusUpdate(ctx context.Context) {
 			}
 		}
 
-	}
-}
-
-// Marks the metadata download process as completed for the Torrent instance.
-// It ensures thread-safe access to the metadata download state using a mutex lock.
-// If the metadata download has not been marked as completed yet, it closes the metadata download channel
-// and updates the state to indicate completion.
-func (tr *Torrent) markMetadataDownloadCompleted() {
-	tr.metadataDownloadCompletedMu.Lock()
-	defer tr.metadataDownloadCompletedMu.Unlock()
-
-	if !tr.metadataDownloadCompleted {
-		close(tr.metadataDownloadCompletedCh)
-		tr.metadataDownloadCompleted = true
 	}
 }
 
@@ -360,103 +336,117 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 	}
 }
 
-/*
-Downloads the torrent's metadata (info) if it hasn't been downloaded yet.
-
-This function listens for peer connections on the `metadataPeersCh` channel and attempts to download
-the torrent's metadata from each peer connection. If the metadata is successfully downloaded and verified
-against the torrent's info hash, the metadata is decoded and stored in the torrent's `info` field.
-
-On success, the function cancels the metadata downloader context, signalling the goroutine responsible
-for sending peer connections to the `metadataPeersCh` channel to stop sending further connections.
-
-For example:
-
- 1. A peer connection is received via the `metadataPeersCh` channel.
-
- 2. The function requests the metadata from the peer using the `downloadMetadata` method.
-
- 3. If the metadata matches the torrent's info hash, it is decoded and stored.
-
- 4. The metadata downloader context is canceled to stop further metadata requests and signal other goroutines.
-
-If the metadata download fails or the hash does not match, the function continues to process other peer connections.
-*/
+// Downloads the torrent's metadata (info) if it hasn't been downloaded yet.
+//
+// Initiates the process of downloading the torrent's metadata from peers.
+// It repeatedly attempts to connect to idle peers that have not previously failed, establishes a peer connection,
+// and checks for support of the metadata extension. If a peer supports the extension, it downloads the metadata,
+// verifies its hash against the expected infoHash, and decodes the metadata. Upon successful parsing and validation,
+// the torrent's "info" is set and the metadata download is marked as completed. The function handles errors gracefully,
+// marking peers as idle and closing connections as needed. The process continues until metadata is successfully downloaded
+// or the provided context is cancelled.
 func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
+	markAsCompleted := func() {
+		select {
+		case <-tr.metadataDownloadCompletedCh:
+		default:
+			close(tr.metadataDownloadCompletedCh)
+		}
+	}
+
 	if tr.info != nil {
-		tr.markMetadataDownloadCompleted()
+		markAsCompleted()
 		return
 	}
+
+	onExit := func(p *peer, pc *peerConnection, err error) {
+		if err != nil {
+			tr.logger.Debug(err.Error())
+		}
+
+		if pc != nil {
+			pc.close()
+		}
+
+		p.markAsIdle()
+	}
+
+	failedPeers := utils.NewSet()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		case pr := <-tr.metadataPeersCh:
-			{
-				pc := newPeerConnection(peerConnectionOpts{
-					infoHash:          tr.infoHash,
-					logger:            tr.logger,
-					peerId:            tr.peerId,
-					remotePeerAddress: pr.String(),
-				})
+		default:
+			pr, ok := tr.getIdlePeer(func(p *peer) bool {
+				return !failedPeers.Has(p.socket)
+			})
 
-				if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: 0}); err != nil {
-					tr.logger.Debug(err.Error())
-					break
-				}
-
-				defer pc.close()
-
-				if !pc.supportsExtension(utMetadata) {
-					tr.logger.Debug(fmt.Sprintf("peer connection \"%s\" does not support the metadata extension\n", pc.remotePeerAddress))
-					break
-				}
-
-				tr.updateStatus(downloadingMetadata)
-
-				metadata, err := pc.downloadMetadata()
-
-				if err != nil {
-					tr.logger.Debug(err.Error())
-					break
-				}
-
-				if metadataHash := sha1.Sum(metadata); !bytes.Equal(tr.infoHash[:], metadataHash[:]) {
-					// todo: blacklist peer?
-					tr.logger.Debug(
-						fmt.Sprintf("metadata hash mismatch for peer \"%s\"; expected \"%x\", got \"%x\"", pc.remotePeerAddress, tr.infoHash, metadataHash),
-					)
-
-					break
-				}
-
-				decodedValue, _, err := bencode.DecodeValue(metadata)
-
-				if err != nil {
-					break
-				}
-
-				metadataDict, ok := decodedValue.(map[string]any)
-
-				if !ok {
-					break
-				}
-
-				info, err := parseInfoDict(metadataDict)
-
-				if err != nil {
-					tr.logger.Debug(
-						fmt.Sprintf("failed to parse metadata info dictionary from peer \"%s\": %v", pc.remotePeerAddress, err),
-					)
-					break
-				}
-
-				tr.info = info
-				tr.markMetadataDownloadCompleted()
-				return
+			if !ok {
+				// todo: request more peers
+				time.Sleep(2 * time.Second)
+				break
 			}
+
+			pc := newPeerConnection(peerConnectionOpts{
+				infoHash:         tr.infoHash,
+				logger:           tr.logger,
+				peerId:           tr.peerId,
+				remotePeerSocket: pr.socket,
+			})
+
+			if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: 0}); err != nil {
+				tr.logger.Debug(err.Error())
+				break
+			}
+
+			defer pc.close()
+
+			if !pc.supportsExtension(utMetadata) {
+				onExit(pr, pc, fmt.Errorf("peer connection \"%s\" does not support the metadata extension", pc.remotePeerSocket))
+				break
+			}
+
+			tr.updateStatus(downloadingMetadata)
+
+			metadata, err := pc.downloadMetadata()
+
+			if err != nil {
+				onExit(pr, pc, err)
+				break
+			}
+
+			if metadataHash := sha1.Sum(metadata); !bytes.Equal(tr.infoHash[:], metadataHash[:]) {
+				// todo: blacklist peer?
+				onExit(pr, pc, fmt.Errorf("metadata hash mismatch for peer \"%s\"; expected \"%x\", got \"%x\"", pc.remotePeerSocket, tr.infoHash, metadataHash))
+				break
+			}
+
+			decodedValue, _, err := bencode.DecodeValue(metadata)
+
+			if err != nil {
+				break
+			}
+
+			metadataDict, ok := decodedValue.(map[string]any)
+
+			if !ok {
+				onExit(pr, pc, fmt.Errorf("expected decoded metadata to be a dictionary received %T", metadataDict))
+				break
+			}
+
+			info, err := parseInfoDict(metadataDict)
+
+			if err != nil {
+				onExit(pr, pc, fmt.Errorf("failed to parse metadata from peer \"%s\": %w", pc.remotePeerSocket, err))
+				break
+			}
+
+			tr.info = info
+			onExit(pr, pc, nil)
+			markAsCompleted()
+			return
 		}
 	}
 }
@@ -474,7 +464,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 		default:
 			{
 				sem.Acquire()
-				pr, err := tr.getIdlePeer()
+				pr, ok := tr.getIdlePeer(nil)
 
 				select {
 				case <-ctx.Done():
@@ -482,15 +472,9 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 					return
 
 				default:
-					if errors.Is(err, errNoIdlePeers) {
+					if !ok {
 						// todo: request for more peers from trackers
 						time.Sleep(2 * time.Second)
-						sem.Release()
-						break
-					}
-
-					if err != nil {
-						tr.logger.Debug(err.Error())
 						sem.Release()
 						break
 					}
@@ -501,15 +485,15 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 						defer sem.Release()
 
 						pc := newPeerConnection(peerConnectionOpts{
-							infoHash:          tr.infoHash,
-							logger:            tr.logger,
-							peerId:            tr.peerId,
-							remotePeerAddress: p.String(),
+							infoHash:         tr.infoHash,
+							logger:           tr.logger,
+							peerId:           tr.peerId,
+							remotePeerSocket: p.socket,
 						})
 
 						if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: len(tr.info.pieces)}); err != nil {
 							tr.logger.Debug(err.Error())
-							tr.removePeer(pc.remotePeerAddress)
+							tr.removePeer(pc.remotePeerSocket)
 							return
 						}
 
@@ -529,7 +513,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 									if err != nil && pc.failedAttempts >= peerConnectionMaxFailedAttempts {
 										// todo: send to 'failedPeersCh"
 										tr.failedPiecesCh <- piece
-										tr.removePeer(pc.remotePeerAddress)
+										tr.removePeer(pc.remotePeerSocket)
 										return
 									}
 

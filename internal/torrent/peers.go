@@ -1,36 +1,34 @@
 package torrent
 
-import (
-	"errors"
-)
-
-var (
-	errNoIdlePeers = errors.New("there are currently no idle peers")
-)
 
 func (tr *Torrent) addPeer(p *peer) {
 	tr.peersMu.Lock()
 	defer tr.peersMu.Unlock()
 
-	addr := p.String()
-
-	if _, ok := tr.peers[addr]; !ok {
-		tr.peers[addr] = p
+	if _, ok := tr.peers[p.socket]; !ok {
+		tr.peers[p.socket] = p
 	}
 }
 
-func (tr *Torrent) getIdlePeer() (*peer, error) {
+func (tr *Torrent) getIdlePeer(filterFn func(p *peer) bool) (*peer, bool) {
 	tr.peersMu.Lock()
 	defer tr.peersMu.Unlock()
 
-	for addr, pr := range tr.peers {
-		if !tr.activePeerIds.Has(addr) {
-			tr.activePeerIds.Add(addr)
-			return pr, nil
+	if filterFn == nil {
+		filterFn = func(p *peer) bool { return true }
+	}
+
+	for _, pr := range tr.peers {
+		if !pr.isIdle() || !filterFn(pr) {
+			continue
+		}
+
+		if pr.markAsBusy() {
+			return pr, true
 		}
 	}
 
-	return nil, errNoIdlePeers
+	return nil, false
 }
 
 func (tr *Torrent) numOfPeers() int {
@@ -43,10 +41,6 @@ func (tr *Torrent) numOfPeers() int {
 func (tr *Torrent) removePeer(addr string) {
 	tr.peersMu.Lock()
 	defer tr.peersMu.Unlock()
-
-	if tr.activePeerIds.Has(addr) {
-		tr.activePeerIds.Remove(addr)
-	}
 
 	delete(tr.peers, addr)
 }
