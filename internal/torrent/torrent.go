@@ -59,9 +59,16 @@ type Torrent struct {
 	incomingPeersCh   chan []*peer
 
 	// Channel to signal the initial discovery of peers
-	initialPeersDiscoveredCh chan struct{}
-	// Ensures the "initialPeersDiscovered" channel is closed once
-	initialPeersDiscoveredOnce sync.Once
+	peersDiscoveredCh chan struct{}
+	// Ensures the "peersDiscovered" channel is closed once
+	peersDiscoveredOnce sync.Once
+
+	// Channel to track all pending requests for more peers
+	pendingPeerRequests   map[string]chan struct{}
+	pendingPeerRequestsMu sync.Mutex
+
+	// Channel to trigger the announcer routine manually
+	triggerAnnounceCh chan struct{}
 
 	metadataDownloadCompletedCh chan struct{}
 	piecesDownloadCompleteCh    chan struct{}
@@ -72,8 +79,7 @@ type Torrent struct {
 
 	err error
 
-	activePeerIds utils.Set
-	trackers      utils.Set
+	trackers utils.Set
 
 	peers map[string]*peer
 
@@ -182,7 +188,6 @@ func (tr *Torrent) enqueuePieces(ctx context.Context) {
 
 func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 	for {
-		// todo: handle failed peers
 		select {
 		case <-ctx.Done():
 			return
@@ -199,8 +204,10 @@ func (tr *Torrent) handleIncomingPeers(ctx context.Context) {
 						tr.addPeer(peer)
 					}
 
-					tr.initialPeersDiscoveredOnce.Do(func() {
-						close(tr.initialPeersDiscoveredCh)
+					tr.signalAllPendingRequests()
+
+					tr.peersDiscoveredOnce.Do(func() {
+						close(tr.peersDiscoveredCh)
 					})
 				}
 			}
@@ -256,7 +263,7 @@ func (tr *Torrent) printProgress() {
 		progress = float64(tr.downloaded) / float64(tr.info.length) * 100
 	}
 
-	log.Printf("(%.2f%%) downloaded %d piece(s) from %d peers\n", progress, tr.downloadedPieces, tr.activePeerIds.Size())
+	log.Printf("(%.2f%%) downloaded %d of %d piece(s)\n", progress, tr.downloadedPieces, len(tr.info.pieces))
 }
 
 // Starts the announcer routine for the Torrent instance.
@@ -276,62 +283,75 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 
 	tr.updateStatus(connecting)
 
+	announce := func() {
+		var wg sync.WaitGroup
+		maxConcurrency := 5
+		sem := utils.NewSemaphore(maxConcurrency)
+
+		for trackerUrl := range tr.trackers.Entries() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			sem.Acquire()
+			wg.Add(1)
+
+			go func(url string) {
+				defer sem.Release()
+				defer wg.Done()
+
+				response, err := tr.sendAnnounceRequest(url)
+
+				if err != nil {
+					// todo: handle failed trackers
+					tr.logger.Debug(fmt.Sprintf("announce request failed for tracker '%s': %v", url, err))
+					return
+				}
+
+				if announcedInterval := time.Second * time.Duration(response.interval); announcedInterval > interval {
+					intervalMu.Lock()
+					interval = announcedInterval
+					ticker.Reset(interval)
+					intervalMu.Unlock()
+				}
+
+				select {
+				case <-ctx.Done():
+					return
+
+				case tr.incomingPeersCh <- response.peers:
+				}
+			}(trackerUrl)
+		}
+
+		wg.Wait()
+	}
+
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			{
-				// todo: notify trackers that we're stopping?
-				return
-			}
+			// todo: notify trackers that we're stopping?
+			return
 
 		case <-ticker.C:
-			{
-				var wg sync.WaitGroup
-				maxConcurrency := 5
-				sem := utils.NewSemaphore(maxConcurrency)
+			announce()
 
-				for trackerUrl := range tr.trackers.Entries() {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
+		case <-tr.triggerAnnounceCh:
+			// avoid unnecessary announce requests if there are no pending requests for more peers.
+			// this scenario can happen if the manual trigger was sent while the "announce" routine was already running.
+			tr.pendingPeerRequestsMu.Lock()
+			numOfPendingReqs := len(tr.pendingPeerRequests)
+			tr.pendingPeerRequestsMu.Unlock()
 
-					sem.Acquire()
-					wg.Add(1)
-
-					go func(url string) {
-						defer sem.Release()
-						defer wg.Done()
-
-						response, err := tr.sendAnnounceRequest(url)
-
-						if err != nil {
-							// todo: handle failed trackers
-							tr.logger.Debug(fmt.Sprintf("announce request failed for tracker '%s': %v", url, err))
-							return
-						}
-
-						if announcedInterval := time.Second * time.Duration(response.interval); announcedInterval > interval {
-							intervalMu.Lock()
-							interval = announcedInterval
-							ticker.Reset(interval)
-							intervalMu.Unlock()
-						}
-
-						select {
-						case <-ctx.Done():
-							return
-
-						case tr.incomingPeersCh <- response.peers:
-						}
-					}(trackerUrl)
-				}
-
-				wg.Wait()
+			if numOfPendingReqs < 1 {
+				break
 			}
+
+			announce()
 		}
 	}
 }
@@ -346,6 +366,8 @@ func (tr *Torrent) startAnnouncer(ctx context.Context) {
 // marking peers as idle and closing connections as needed. The process continues until metadata is successfully downloaded
 // or the provided context is cancelled.
 func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
+	tr.updateStatus(downloadingMetadata)
+
 	markAsCompleted := func() {
 		select {
 		case <-tr.metadataDownloadCompletedCh:
@@ -359,8 +381,11 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 		return
 	}
 
+	failedPeers := utils.NewSet()
+
 	onExit := func(p *peer, pc *peerConnection, err error) {
 		if err != nil {
+			failedPeers.Add(p.socket)
 			tr.logger.Debug(err.Error())
 		}
 
@@ -371,21 +396,18 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 		p.markAsIdle()
 	}
 
-	failedPeers := utils.NewSet()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
 		default:
-			pr, ok := tr.getIdlePeer(func(p *peer) bool {
+			pr := tr.getIdlePeer(func(p *peer) bool {
 				return !failedPeers.Has(p.socket)
 			})
 
-			if !ok {
-				// todo: request more peers
-				time.Sleep(2 * time.Second)
+			if pr == nil {
+				tr.requestMorePeers(ctx)
 				break
 			}
 
@@ -397,18 +419,14 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 			})
 
 			if err := pc.initConnection(peerConnectionInitConfig{bitfieldSize: 0}); err != nil {
-				tr.logger.Debug(err.Error())
+				onExit(pr, pc, err)
 				break
 			}
-
-			defer pc.close()
 
 			if !pc.supportsExtension(utMetadata) {
 				onExit(pr, pc, fmt.Errorf("peer connection \"%s\" does not support the metadata extension", pc.remotePeerSocket))
 				break
 			}
-
-			tr.updateStatus(downloadingMetadata)
 
 			metadata, err := pc.downloadMetadata()
 
@@ -426,6 +444,7 @@ func (tr *Torrent) startMetadataDownloader(ctx context.Context) {
 			decodedValue, _, err := bencode.DecodeValue(metadata)
 
 			if err != nil {
+				onExit(pr, pc, err)
 				break
 			}
 
@@ -464,7 +483,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 		default:
 			{
 				sem.Acquire()
-				pr, ok := tr.getIdlePeer(nil)
+				pr := tr.getIdlePeer(nil)
 
 				select {
 				case <-ctx.Done():
@@ -472,7 +491,7 @@ func (tr *Torrent) startPieceDownloader(ctx context.Context) {
 					return
 
 				default:
-					if !ok {
+					if pr == nil {
 						// todo: request for more peers from trackers
 						time.Sleep(2 * time.Second)
 						sem.Release()
@@ -656,8 +675,8 @@ func (t *Torrent) Start() {
 	t.err = nil
 	t.errorCh = make(chan error, 1)
 
-	t.initialPeersDiscoveredCh = make(chan struct{}, 1)
-	t.initialPeersDiscoveredOnce = sync.Once{}
+	t.peersDiscoveredCh = make(chan struct{}, 1)
+	t.peersDiscoveredOnce = sync.Once{}
 
 	t.stoppedCh = make(chan struct{}, 1)
 
@@ -674,7 +693,7 @@ func (t *Torrent) Start() {
 		shutdownFn(stopped, nil)
 		return
 
-	case <-t.initialPeersDiscoveredCh:
+	case <-t.peersDiscoveredCh:
 		go t.startMetadataDownloader(ctx)
 	}
 

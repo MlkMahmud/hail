@@ -88,14 +88,16 @@ func newTorrentFromMagnetURL(magnetURL *url.URL, opts NewTorrentOpts) (*Torrent,
 	torrent.peerId = opts.PeerId
 	torrent.outputDir = opts.OutputDir
 
-	torrent.metadataDownloadCompletedCh = make(chan struct{}, 1)
-	torrent.piecesDownloadCompleteCh = make(chan struct{}, 1)
+	torrent.metadataDownloadCompletedCh = make(chan struct{})
+	torrent.piecesDownloadCompleteCh = make(chan struct{})
 
 	torrent.incomingPeersCh = make(chan []*peer, 1)
 	torrent.maxPeerConnections = 10
 
-	torrent.activePeerIds = *utils.NewSet()
+	torrent.pendingPeerRequests = make(map[string]chan struct{})
 	torrent.peers = make(map[string]*peer)
+
+	torrent.triggerAnnounceCh = make(chan struct{}, 1)
 
 	torrent.downloadedPieceCh = make(chan downloadedPiece, 10)
 	torrent.failedPiecesCh = make(chan piece, 10)

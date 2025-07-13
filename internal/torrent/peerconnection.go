@@ -95,8 +95,6 @@ func (p *peerConnection) close() {
 
 	p.closeCh = nil
 	p.conn = nil
-	p.reader = nil
-	p.writer = nil
 }
 
 func (p *peerConnection) deleteRequest(key string) {

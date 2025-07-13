@@ -2,7 +2,10 @@ module github.com/MlkMahmud/hail
 
 go 1.24
 
-require github.com/urfave/cli/v2 v2.27.6
+require (
+	github.com/google/uuid v1.6.0
+	github.com/urfave/cli/v2 v2.27.6
+)
 
 require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.5 // indirect
